@@ -1,0 +1,1 @@
+# Smath release build keeps default rules; minification is disabled.

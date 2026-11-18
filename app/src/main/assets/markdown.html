@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="stylesheet" href="vendor/katex.min.css">
+    <style>
+        :root {
+            color-scheme: light;
+            --fg: #1b1f2a;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+            --code-bg: #f4f6fa;
+            --quote: #64748b;
+            --link: #3d5afe;
+            --table-head: #f7f8fb;
+        }
+        html.dark {
+            color-scheme: dark;
+            --fg: #e8eaf0;
+            --muted: #9aa3b2;
+            --line: #353b49;
+            --code-bg: #222733;
+            --quote: #9aa3b2;
+            --link: #8fa6ff;
+            --table-head: #262c38;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            color: var(--fg);
+            font-family: -apple-system, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 16px;
+            line-height: 1.72;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
+        }
+        body { padding: 1px 0 2px; }
+        #content > :first-child { margin-top: 0 !important; }
+        #content > :last-child { margin-bottom: 0 !important; }
+        p { margin: 0 0 10px; }
+        h1, h2, h3, h4, h5, h6 {
+            margin: 18px 0 8px;
+            line-height: 1.35;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+        }
+        h1 { font-size: 22px; }
+        h2 { font-size: 19px; }
+        h3 { font-size: 17px; }
+        h4, h5, h6 { font-size: 16px; }
+        ul, ol { margin: 6px 0 12px; padding-left: 24px; }
+        li { margin: 3px 0; }
+        li > p { margin: 3px 0; }
+        a { color: var(--link); text-decoration: none; }
+        a:active { opacity: .65; }
+        strong { font-weight: 650; }
+        hr { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
+        blockquote {
+            margin: 12px 0;
+            padding: 2px 0 2px 12px;
+            border-left: 3px solid var(--line);
+            color: var(--muted);
+        }
+        code {
+            font-family: "SFMono-Regular", "Roboto Mono", "Noto Sans Mono CJK SC", monospace;
+            font-size: 0.88em;
+            background: var(--code-bg);
+            border-radius: 5px;
+            padding: 2px 5px;
+        }
+        pre {
+            margin: 12px 0;
+            padding: 12px 14px;
+            background: var(--code-bg);
+            border-radius: 12px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            line-height: 1.55;
+        }
+        pre code {
+            background: transparent;
+            padding: 0;
+            font-size: 13px;
+            white-space: pre;
+            overflow-wrap: normal;
+            word-break: normal;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+            font-size: 14.5px;
+            display: block;
+            overflow-x: auto;
+        }
+        th, td {
+            border: 1px solid var(--line);
+            padding: 7px 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th { background: var(--table-head); font-weight: 600; }
+        img { max-width: 100%; height: auto; border-radius: 10px; }
+        .katex { font-size: 1.04em; }
+        .katex-display {
+            margin: 12px 0;
+            padding: 2px 0 6px;
+            max-width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-x: contain;
+            text-align: center;
+        }
+        .katex-display.is-scrollable {
+            text-align: left;
+            touch-action: none;
+            user-select: none;
+        }
+        .katex-display > .katex {
+            display: inline-block;
+            text-align: left;
+            min-width: max-content;
+        }
+        .katex-display::-webkit-scrollbar { height: 3px; }
+        .katex-display::-webkit-scrollbar-thumb {
+            background: rgba(128, 138, 160, 0.45);
+            border-radius: 3px;
+        }
+        .katex-error { color: #d9485f; }
+        .task-list-item { list-style: none; margin-left: -18px; }
+        .footnotes { font-size: 13px; color: var(--muted); }
+    </style>
+</head>
+<body>
+<div id="content"></div>
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="vendor/katex.min.js"></script>
+<script src="vendor/auto-render.min.js"></script>
+<script>
+    (function () {
+        var content = document.getElementById('content');
+        var scheduled = false;
+
+        // WebView 内层的 overflow 容器在部分机型上不会自己跟手。手指落在
+        // 超长公式上时，整个手势都锁在公式内：只做横向滚动，不让 Compose
+        // 的 LazyColumn/抽屉手势抢走纵向拖动。抬手后才恢复页面滚动。
+        var dragBlock = null;
+        var dragStartX = 0;
+        var dragStartScroll = 0;
+
+        function findScrollableFormula(target) {
+            while (target && target !== content) {
+                if (target.classList &&
+                    target.classList.contains('katex-display') &&
+                    target.classList.contains('is-scrollable')) {
+                    return target;
+                }
+                target = target.parentNode;
+            }
+            return null;
+        }
+
+        function setParentFormulaLock(locked) {
+            try {
+                if (window.SmathBridge && SmathBridge.onFormulaLock) {
+                    SmathBridge.onFormulaLock(locked);
+                }
+            } catch (e) {
+            }
+        }
+
+        content.addEventListener('touchstart', function (event) {
+            if (event.touches.length !== 1) return;
+            var block = findScrollableFormula(event.target);
+            if (!block) return;
+            dragBlock = block;
+            dragStartX = event.touches[0].clientX;
+            dragStartScroll = block.scrollLeft;
+            event.preventDefault();
+            event.stopPropagation();
+            setParentFormulaLock(true);
+        }, { passive: false });
+
+        content.addEventListener('touchmove', function (event) {
+            if (!dragBlock || event.touches.length !== 1) return;
+            event.preventDefault();
+            event.stopPropagation();
+            var dx = event.touches[0].clientX - dragStartX;
+            dragBlock.scrollLeft = dragStartScroll - dx;
+        }, { passive: false });
+
+        function endFormulaDrag() {
+            if (!dragBlock) return;
+            dragBlock = null;
+            setParentFormulaLock(false);
+        }
+        content.addEventListener('touchend', endFormulaDrag, { passive: true });
+        content.addEventListener('touchcancel', endFormulaDrag, { passive: true });
+
+        function notify() {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(function () {
+                scheduled = false;
+                // 只取内容高度。documentElement.scrollHeight 会等于 WebView
+                // 当前视口高度，若参与计算会形成“越撑越高”的反馈循环。
+                var h = Math.max(
+                    document.body.scrollHeight,
+                    content.scrollHeight
+                );
+                if (window.SmathBridge && window.SmathBridge.onHeight) {
+                    window.SmathBridge.onHeight(Math.ceil(h) + 2);
+                }
+            });
+        }
+
+        if (window.ResizeObserver) {
+            new ResizeObserver(notify).observe(document.body);
+        }
+        window.addEventListener('load', notify);
+        window.addEventListener('resize', notify);
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(notify);
+        }
+
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        // Markdown turns raw line breaks inside a $$...$$ block into <br>, which
+        // breaks KaTeX. Pull formulas out first, then put them back after the
+        // Markdown has been parsed and sanitized.
+        function protectMath(text) {
+            var store = [];
+            var pattern = /```[\s\S]*?```|`[^`\n]*`|\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^$\n]+?\$|\\\([\s\S]*?\\\)/g;
+            var protectedText = text.replace(pattern, function (match) {
+                var first = match.slice(0, 2);
+                if (match.charAt(0) === '`') return match;
+                var body;
+                var display;
+                if (first === '$$') {
+                    body = match.slice(2, -2);
+                    display = true;
+                } else if (first === '\\[') {
+                    body = match.slice(2, -2);
+                    display = true;
+                } else if (first === '\\(') {
+                    body = match.slice(2, -2);
+                    display = false;
+                } else {
+                    body = match.slice(1, -1);
+                    display = false;
+                }
+                // 公式常出现在 Markdown 引用块里（每行以 "> " 开头）。这些
+                // 引用标记如果留在公式体内，KaTeX 会把它们当成大于号显示，
+                // 截图里的 "> u-v | ... >" 就是这样产生的。
+                body = body.replace(/^[ \t]*>[ \t]?/gm, '');
+                if (!body.trim()) return match;
+                var token = 'SMATHPLACE' + store.length + 'X';
+                store.push({ body: body, display: display });
+                return token;
+            });
+            return { text: protectedText, store: store };
+        }
+
+        function restoreMath(html, store) {
+            return html.replace(/SMATHPLACE(\d+)X/g, function (_, index) {
+                var item = store[Number(index)];
+                if (!item) return '';
+                var body = escapeHtml(item.body);
+                return item.display ? '\\[' + body + '\\]' : '\\(' + body + '\\)';
+            });
+        }
+
+        // 行间公式保持原始字号；短公式居中，超出屏幕宽度时切换为左对齐，
+        // 由公式容器自身横向滚动，和 DeepSeek 网页端一致。左对齐可以保证
+        // 从公式开头开始阅读，而不是先看到被居中裁掉后的中间部分。
+        function setupDisplayMath() {
+            var blocks = content.querySelectorAll('.katex-display');
+            for (var i = 0; i < blocks.length; i++) {
+                var block = blocks[i];
+                var formula = block.querySelector('.katex');
+                if (formula) {
+                    formula.style.transform = 'none';
+                    formula.style.maxWidth = 'none';
+                    formula.style.display = 'inline-block';
+                }
+                var formulaWidth = formula
+                    ? (formula.scrollWidth || formula.getBoundingClientRect().width)
+                    : 0;
+                var scrollable = formulaWidth > block.clientWidth + 1;
+                block.classList.toggle('is-scrollable', scrollable);
+                block.setAttribute('tabindex', '0');
+                block.setAttribute('role', 'group');
+                block.setAttribute('aria-label', scrollable ? '公式，可左右滑动查看' : '公式');
+                block.scrollLeft = 0;
+            }
+        }
+
+        if (window.DOMPurify) {
+            DOMPurify.addHook('afterSanitizeAttributes', function (node) {
+                if (node.tagName === 'A') {
+                    node.setAttribute('rel', 'noopener noreferrer');
+                }
+            });
+        }
+
+        function render(markdown, dark) {
+            document.documentElement.classList.toggle('dark', !!dark);
+            var text = markdown || '';
+            var prepared = protectMath(text);
+            var html;
+            try {
+                if (window.marked) {
+                    marked.setOptions({ gfm: true, breaks: true });
+                    html = marked.parse(prepared.text);
+                } else {
+                    html = '<p>' + escapeHtml(prepared.text).replace(/\n/g, '<br>') + '</p>';
+                }
+            } catch (e) {
+                html = '<p>' + escapeHtml(prepared.text).replace(/\n/g, '<br>') + '</p>';
+            }
+            if (window.DOMPurify) {
+                html = DOMPurify.sanitize(html, {
+                    USE_PROFILES: { html: true },
+                    ADD_ATTR: ['target', 'rel', 'class']
+                });
+            }
+            content.innerHTML = restoreMath(html, prepared.store) || '<p></p>';
+            if (window.renderMathInElement) {
+                try {
+                    renderMathInElement(content, {
+                        delimiters: [
+                            { left: '$$', right: '$$', display: true },
+                            { left: '\\[', right: '\\]', display: true },
+                            { left: '$', right: '$', display: false },
+                            { left: '\\(', right: '\\)', display: false }
+                        ],
+                        throwOnError: false,
+                        strict: false,
+                        trust: false,
+                        macros: {
+                            '\\R': '\\mathbb{R}',
+                            '\\N': '\\mathbb{N}',
+                            '\\Z': '\\mathbb{Z}',
+                            '\\Q': '\\mathbb{Q}',
+                            '\\C': '\\mathbb{C}'
+                        }
+                    });
+                } catch (e) {
+                    // Keep the raw text if a formula cannot be rendered.
+                }
+            }
+            setupDisplayMath();
+            notify();
+            requestAnimationFrame(function () {
+                setupDisplayMath();
+                notify();
+            });
+            setTimeout(function () {
+                setupDisplayMath();
+                notify();
+            }, 80);
+        }
+
+        window.renderMarkdown = render;
+        window.notifyHeight = notify;
+        window.SmathBridgeHeight = notify;
+    })();
+</script>
+</body>
+</html>

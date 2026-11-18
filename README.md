@@ -1,0 +1,68 @@
+# Smath
+
+Smath 是一个原生 Android（Kotlin + Jetpack Compose）的对话式 AI Agent。界面参考 DeepSeek 消费端 App，只保留文字对话与图片输入。
+
+## 功能
+
+- **模型和 API Key**：内置 DeepSeek 官方与 ChatGPT 两个服务商预设，也支持添加任意 OpenAI Chat Completions 兼容服务商。API Key 只保存在本机应用私有目录。
+- **Agent 预设**：数学问题、英语问题、知识点整理、自定义预设。每个预设可配置学段（大学 / 高中 / 初中 / 小学 / 不限）和可多选的回答风格。英语预设只提供适合英语解答的风格（通俗、严谨、优美、从本质回答），不会出现数学符号化选项。
+- **只在对话开始时注入**：基础人设提示词、学段要求和回答风格会固化为该会话的 system prompt；对话开始后预设锁定，不会在后续轮次重复叠加。预设选择器只出现在新对话欢迎页。
+- **@ 上下文引用**：输入框左侧的 `@` 可引用当前会话的历史消息，或另一个会话的最近几轮内容。引用会显示为可移除的 chip，发送时作为“资料”附在本轮问题前，不会改写历史记录。
+- **更聪明的系统提示**：借鉴 DeepSeek Harness 的分层提示思路，在保留用户指定基础人设的同时，加入任务拆解、条件核查、推导自检、区分事实与猜测、图片信息提取等质量约束，并按学段和风格继续叠加。
+- **AI 标题与长回答续写**：首轮回答完成后，用一次独立短请求生成会话标题（可手动改名覆盖）。回答因输出上限被截断时，会自动请求续写，最多两次，并在仍不完整时给出提示。
+- **思考过程**：默认折叠；折叠时显示最后一行思考内容，展开后显示完整 reasoning。
+- **联网搜索**：使用 DeepSeek 官方 `https://api.deepseek.com/v1/tools/search`。可复用 DeepSeek 服务商的 Key，也可以在设置中单独填写搜索 Key；搜索结果会作为不可信上下文注入，并展示引用链接。
+- **图片输入与裁剪**：拍照或从相册选择后直接进入裁剪页；裁剪默认保留整张图片，支持拖动边角或内部选区，画面两侧留出安全边距避免触发系统返回手势。
+- **截屏**：可在设置中开启平板用悬浮截屏按钮。按钮可拖动，单击后请求系统录屏授权，截取一帧并回到应用进入裁剪页；平板在系统支持时会尝试以小窗口启动。截屏不会保存到相册，只落在应用缓存。
+- **会话文件夹**：支持手动整理、按 Windows 风格日期分组（今天 / 昨天 / 本周 / 本月 / 更早），以及 AI 整理。AI 整理只把会话标题和更新时间发送给当前模型，并要求返回 JSON 后重建文件夹。
+- **错误解释**：模型调用失败时，在对话流中展示常见 HTTP / 网络错误的含义、可重试性与原始错误信息。
+- **Markdown 与公式**：本地打包 marked、DOMPurify 和 KaTeX（含完整字体），支持表格、代码块、引用、链接、行内公式 `$...$` / `\(...\)` 与独立公式 `$$...$$` / `\[...\]`。过宽的独立公式保持原字号，在公式区域左右滑动查看；渲染在本地 WebView 中完成，不依赖 CDN。
+
+## 构建
+
+环境要求：JDK 17+、Android SDK Platform 35、Build-Tools 34+、Gradle 8.7。
+
+```powershell
+# 项目已包含 Gradle Wrapper
+.\gradlew.bat assembleDebug
+```
+
+本机离线构建时，如果 Gradle 的原生缓存目录不可写，可使用：
+
+```powershell
+$env:GRADLE_USER_HOME="$PWD\.gradle-home"
+$env:GRADLE_RO_DEP_CACHE="$HOME\.gradle\caches"
+.\gradlew.bat --offline assembleDebug
+```
+
+产物：`app/build/outputs/apk/debug/app-debug.apk`。
+
+正式版使用本地 release 签名：
+
+```powershell
+$env:GRADLE_USER_HOME="$PWD\.gradle-home"
+$env:GRADLE_RO_DEP_CACHE="$HOME\.gradle\caches"
+.\gradlew.bat --offline assembleRelease
+```
+
+产物：`app/build/outputs/apk/release/app-release.apk`。签名配置从根目录 `keystore.properties` 读取，密钥库 `keystore/smath-release.jks` 不随仓库提交，请自行妥善备份；仓库中的 `.gitignore` 已排除这两个文件。
+
+也可以用 Android Studio 直接打开项目构建。`local.properties` 中的 `sdk.dir` 需要按本机 Android SDK 路径调整。
+
+## 配置与数据
+
+1. 打开左上角菜单 → 设置（模型和 API Key）。
+2. 为要使用的服务商填写 Key，选择服务商和模型。
+3. 如需联网搜索，填写 DeepSeek 官方 Key（或单独的搜索 Key），并在输入框上方打开「联网」。
+4. 如需悬浮截屏，在设置底部打开「截屏悬浮按钮」，并按系统提示授予“显示在其他应用上层”权限。首次截屏还会请求一次系统录屏授权。
+
+截屏功能只使用 `SYSTEM_ALERT_WINDOW`、前台服务和 MediaProjection 权限；不申请存储权限，也不写入相册。
+
+会话、文件夹、设置和 API Key 都存储在应用私有目录的 `smath_data.json`。应用已关闭 Android 自动备份，避免 Key 被写入系统备份。卸载应用会清除这些数据。
+
+## 说明
+
+- `release` 构建使用项目本地生成的 release 密钥签名；仓库不包含该密钥，克隆后如需发布请自行配置 `keystore.properties` 与密钥库。
+- 项目按需求未编写自动化测试；Markdown/KaTeX 资源和渲染链路已做静态校验。
+- 联网搜索的计费、可用性和结果质量由 DeepSeek 官方平台决定。
+- AI 整理是尽力而为的 JSON 解析；若模型未按要求返回 JSON，会提示重试，不会破坏现有会话。
