@@ -21,8 +21,8 @@ android {
         applicationId = "com.smath.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 11
+        versionName = "1.3.5"
     }
 
     signingConfigs {

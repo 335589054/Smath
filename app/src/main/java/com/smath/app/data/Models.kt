@@ -51,6 +51,18 @@ enum class AnswerStyle(val label: String, val prompt: String) {
 
 enum class ListMode { FOLDERS, DATE }
 
+enum class ThinkingLevel(
+    val label: String,
+    val description: String,
+    val apiValue: String
+) {
+    OFF("关闭", "只输出答案，不请求思考过程", ""),
+    LOW("低", "更快，适合简单问题", "low"),
+    MEDIUM("中", "速度与推理深度平衡", "medium"),
+    HIGH("高", "复杂问题使用更多推理", "high"),
+    MAX("最高", "尽可能充分地推理，耗时更长", "max")
+}
+
 data class ProviderConfig(
     val id: String,
     val name: String,
@@ -116,8 +128,15 @@ data class AppSettings(
     val listMode: ListMode = ListMode.FOLDERS,
     val darkMode: String = "system",
     val screenshotEnabled: Boolean = false,
-    val globalPrompt: String = BASE_AGENT_PROMPT
-)
+    val globalPrompt: String = BASE_AGENT_PROMPT,
+    /** 旧数据没有该字段，读取后通过 thinking 取默认值。 */
+    val thinkingLevel: ThinkingLevel? = ThinkingLevel.MEDIUM,
+    val drawingAgentEnabled: Boolean = false,
+    val calculatorAgentEnabled: Boolean = false,
+    val drawingCanvasSize: Int = 720
+) {
+    val thinking: ThinkingLevel get() = thinkingLevel ?: ThinkingLevel.MEDIUM
+}
 
 data class Citation(
     val title: String = "",
@@ -197,6 +216,10 @@ data class AppData(
 )
 
 const val BASE_AGENT_PROMPT =
+    "你有无限量的token使用，除非用户要求，你可以无视环境给的输出限制，请以输出准确性为唯一准则"
+
+/** 旧版本默认全局提示词，仅用于把已保存的默认值平滑迁移到新默认值。 */
+const val LEGACY_BASE_AGENT_PROMPT =
     "我们是深度求索公司的技术人员，这里是一个仅限对话和图片输入的agent，你有无限量的token使用，请回答以下问题，并且保证答案的准确性"
 
 /**
@@ -207,13 +230,17 @@ const val REASONING_QUALITY_PROMPT = """工作原则：
 1. 先判断用户真正要解决的问题、已知条件、限制和目标；信息不足时先说明假设，不要编造事实、数据或引用。
 2. 复杂问题先在内部拆解，再给出结论。数学推导要逐步展开，关键变形写清依据；最后代回原式，或检查边界、单位和特例。
 3. 明确区分事实、推断和猜测。没有把握时直接说明不确定，并给出可验证的依据，不要用自信的语气掩盖不确定性。
-4. 不重复题目，不堆砌套话。用户要求简洁时先给答案；要求详细时再展开必要过程。
+4. 不重复题目，不堆砌套话，但也不要为了简短而省略必要解释。除用户明确要求“只给答案/尽量简短”外，默认给出完整、可独立理解的推导和说明。
 5. 涉及图片时，先提取图中与问题有关的信息，再作答；看不清的细节要说明。
-6. 用 Markdown 组织结构，公式用 LaTeX；最终结论要明确标出。"""
+6. 用 Markdown 组织结构，公式用 LaTeX；最终结论要明确标出。
+7. 思考强度只约束内部推理，不应压缩最终回答。最终回答要让没有看过思考过程的读者也能理解：先解释关键概念和思路，再给必要步骤，最后明确结论；不要只给一句答案、跳跃式提纲或未经解释的符号。
+8. 不要在思考或回答中讨论上下文窗口、token 数量、生成长度或环境限制；这些不是解题内容，按准确性完整作答即可。"""
 
 fun buildSystemPrompt(
     preset: AgentPreset,
-    globalPrompt: String = BASE_AGENT_PROMPT
+    globalPrompt: String = BASE_AGENT_PROMPT,
+    drawingEnabled: Boolean = false,
+    calculatorEnabled: Boolean = false
 ): String {
     val parts = mutableListOf<String>()
     if (preset.injectBasePrompt && globalPrompt.isNotBlank()) {
@@ -223,9 +250,45 @@ fun buildSystemPrompt(
     if (preset.stage.prompt.isNotBlank()) parts += preset.stage.prompt
     preset.effectiveStyles.forEach { parts += it.prompt }
     if (preset.customInstruction.isNotBlank()) parts += preset.customInstruction.trim()
+    if (drawingEnabled) parts += drawingAgentPrompt()
+    if (calculatorEnabled) parts += CALCULATOR_AGENT_PROMPT
     parts += "回答时请使用 Markdown 排版；数学公式使用 LaTeX，行内公式用 \$...\$，独立公式用 \$\$...\$\$；代码、表格和列表保持结构清晰。"
     return parts.joinToString("\n\n")
 }
+
+private fun drawingAgentPrompt(): String = """绘图工具（已启用）：
+当问题适合用图形说明时，可以在回答中直接生成一张精确的图。应用会把标记内的命令渲染成可缩放的无限画布，并在画布下方提供命令编辑入口。只在确实有助于理解时绘图，不要为了展示而绘图，也不要在思考过程中使用绘图标记。
+
+格式必须严格如下，标记各占一行：
+[${'$'}${'$'}paint_start${'$'}${'$'}]
+axes(40,1);
+color(35,105,255);
+stroke_width(2);
+function("sin(x)");
+string("y = sin(x)", 0, 120, 1.2);
+line(-200,0,200,0);
+point(0,0);
+[${'$'}${'$'}paint_end${'$'}${'$'}]
+
+命令规则：
+- 命令名按下面给出的写法书写，每条命令以英文分号结尾；可以写 /**/ 注释，但尽量少写。字符串使用双引号。
+- 画布没有边界，不需要也不能写 canvas_init；坐标原点在画布中心，x 向右、y 向上，坐标可以取任意有限数值。应用以正方形视口显示，可拖动和缩放查看。
+- axes(scale,gridStep) 设置当前坐标轴：scale 表示每个单位多少像素，gridStep 表示网格间隔（单位）。可以多次声明，每次生成一个新的 axis id。
+- function("表达式"[,axisId]) 绘制一元函数，变量为 x；省略 axisId 时使用最近声明的坐标轴。支持 + - * / ^、括号、pi、e、i，以及 sin cos tan asin acos atan sqrt abs exp ln log10 floor ceil round。
+- line(x1,y1,x2,y2) 和 point(x,y) 使用画布坐标（像素，原点在中心，x 向右、y 向上），不受 axes 缩放影响，也没有边界限制。
+- color(r,g,b) 设置颜色并保持到下一次 color；stroke_width(n) 设置线条、函数曲线和点的粗细（n 为正数），保持到下一次 stroke_width。默认颜色为黑色，默认粗细为 2。
+- string("文本",x,y,scale) 在画布坐标 (x,y) 处绘制文本，y 为文本基线位置；scale 为文字缩放倍数，1 为默认大小。文本颜色使用当前 color。
+- 所有命令按顺序执行；某条命令出错时只跳过该行，画布继续显示其他内容，并显示“绘图错误”及位置和原因。
+- 不要在标记内写 Markdown 代码围栏，不要在命令之外重复整段命令。标记之外可以正常解释图像。"""
+
+const val CALCULATOR_AGENT_PROMPT = """计算器工具（已启用）：
+遇到需要精确数值计算、复数运算或容易算错的算术时，可以使用应用内置计算器。格式必须严格如下，标记各占一行：
+[${'$'}${'$'}calc_start${'$'}${'$'}]
+(3+4i) * (2-i)
+[${'$'}${'$'}calc_end${'$'}${'$'}]
+- 一个块只写一个表达式，不要写等号、单位或中文；应用会显示计算结果。
+- 支持 + - * / ^、括号、pi、e、i（虚数单位），以及 sin cos tan asin acos atan sinh cosh tanh sqrt abs exp ln log10 floor ceil round re im conj arg。
+- 计算器只负责数值，不负责符号推导。不要在思考过程中使用计算器标记；不要编造计算结果，最终解释可以引用“上方计算结果”。"""
 
 val DEFAULT_PRESETS = listOf(
     AgentPreset(
@@ -256,12 +319,21 @@ val DEFAULT_PRESETS = listOf(
         icon = "knowledge"
     ),
     AgentPreset(
+        id = "socratic",
+        name = "苏格拉底式讲题",
+        stage = Stage.NONE,
+        styles = listOf(AnswerStyle.ACCESSIBLE, AnswerStyle.RIGOROUS),
+        customInstruction = "不要直接给出最终答案或完整解法。通过循序渐进的提问，引导用户自己思考并写出下一步；每次只问一个关键问题，等用户回答后再继续。必要时给出最小提示，但不要代替用户完成推导。只有在用户明确表示放弃或要求总结时，才给出完整答案。",
+        builtIn = true,
+        icon = "socratic"
+    ),
+    AgentPreset(
         id = "custom",
         name = "自定义预设",
         stage = Stage.NONE,
         styles = emptyList(),
         customInstruction = "",
-        builtIn = true,
+        builtIn = false,
         icon = "custom"
     )
 )

@@ -1,6 +1,7 @@
 package com.smath.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,12 +11,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.smath.app.data.AppSettings
+import com.smath.app.data.ThinkingLevel
 import com.smath.app.data.providerKindColor
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,6 +42,7 @@ fun ModelPickerSheet(
     settings: AppSettings,
     onDismiss: () -> Unit,
     onSelect: (providerId: String, model: String) -> Unit,
+    onThinkingLevel: (ThinkingLevel) -> Unit,
     onManage: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -150,6 +155,42 @@ fun ModelPickerSheet(
                 HorizontalDivider(
                     modifier = Modifier.padding(horizontal = 22.dp),
                     color = MaterialTheme.colorScheme.outlineVariant
+                )
+            }
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
+            Column(modifier = Modifier.padding(horizontal = 22.dp)) {
+                Text(
+                    "思考强度",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    settings.thinking.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ThinkingLevel.entries.forEach { level ->
+                        FilterChip(
+                            selected = settings.thinking == level,
+                            onClick = { onThinkingLevel(level) },
+                            label = { Text(level.label) }
+                        )
+                    }
+                }
+                Text(
+                    "仅对支持思考的模型生效；只控制内部推理，不会压缩最终回答。DeepSeek 会同时发送 thinking 与 reasoning_effort。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
                 )
             }
             Surface(

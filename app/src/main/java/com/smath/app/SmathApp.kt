@@ -17,6 +17,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -44,6 +46,8 @@ fun SmathApp(
     val activeId by viewModel.activeId.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val view = LocalView.current
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val dark = when (data.settings.darkMode) {
         "light" -> false
         "dark" -> true
@@ -70,6 +74,15 @@ fun SmathApp(
         var showSettings by remember { mutableStateOf(false) }
         var cropRequest by remember { mutableStateOf<CropRequest?>(null) }
         var chatDraftImage by remember { mutableStateOf<String?>(null) }
+
+        // 裁剪层打开时输入框仍可能持有焦点，导致从相机/相册返回后
+        // IME 重新弹出。进入裁剪前主动清焦点并收起键盘。
+        LaunchedEffect(cropRequest != null) {
+            if (cropRequest != null) {
+                focusManager.clearFocus()
+                keyboard?.hide()
+            }
+        }
 
         LaunchedEffect(initialCropPath) {
             val path = initialCropPath

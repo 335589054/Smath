@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Calculate
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
@@ -98,6 +99,7 @@ fun SettingsScreen(
     var expandedProviderId by remember { mutableStateOf(settings.activeProviderId) }
     var deleteTarget by remember { mutableStateOf<ProviderConfig?>(null) }
     var editingPreset by remember { mutableStateOf<AgentPreset?>(null) }
+    var editingPresetIsNew by remember { mutableStateOf(false) }
     var editingGlobalPrompt by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
@@ -241,7 +243,28 @@ fun SettingsScreen(
                 )
             }
             items(settings.presets, key = { "preset_${it.id}" }) { preset ->
-                PresetRow(preset = preset, onClick = { editingPreset = preset })
+                PresetRow(preset = preset, onClick = {
+                    editingPresetIsNew = false
+                    editingPreset = preset
+                })
+            }
+            item {
+                TextButton(
+                    onClick = {
+                        editingPresetIsNew = true
+                        editingPreset = AgentPreset(
+                            id = "",
+                            name = "新预设",
+                            builtIn = false,
+                            icon = "custom"
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("新建预设")
+                }
             }
 
             item { Spacer(Modifier.height(12.dp)) }
@@ -251,6 +274,94 @@ fun SettingsScreen(
                     prompt = settings.globalPrompt,
                     onEdit = { editingGlobalPrompt = true }
                 )
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+            item { SectionLabel("特殊 Agent") }
+            item {
+                SettingsCard {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "绘图 Agent",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "让模型用一组绘图命令生成可缩放、可编辑的函数图像。只在新对话开始时注入使用说明。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.drawingAgentEnabled,
+                                onCheckedChange = viewModel::setDrawingAgentEnabled
+                            )
+                        }
+                        if (settings.drawingAgentEnabled) {
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "初始视野尺寸",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "画布没有边界，这里只决定第一次打开时的显示范围；坐标可以无限延伸。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(480, 720, 960).forEach { size ->
+                                    FilterChip(
+                                        selected = settings.drawingCanvasSize == size,
+                                        onClick = { viewModel.setDrawingCanvasSize(size) },
+                                        label = { Text("$size px") }
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Calculate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "计算器 Agent",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "让模型在回答中调用本地计算器，支持复数与常见数值函数，结果显示为可复制的卡片。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.calculatorAgentEnabled,
+                                onCheckedChange = viewModel::setCalculatorAgentEnabled
+                            )
+                        }
+                    }
+                }
             }
 
             item { Spacer(Modifier.height(12.dp)) }
@@ -443,11 +554,25 @@ fun SettingsScreen(
         PresetConfigSheet(
             preset = preset,
             locked = false,
-            onDismiss = { editingPreset = null },
-            onSave = { viewModel.updatePreset(it) },
-            onReset = {
-                viewModel.resetPresetToDefault(preset.id)
+            isNew = editingPresetIsNew,
+            onDismiss = {
                 editingPreset = null
+                editingPresetIsNew = false
+            },
+            onSave = {
+                if (editingPresetIsNew) viewModel.addPreset(it) else viewModel.updatePreset(it)
+            },
+            onReset = {
+                if (!editingPresetIsNew) {
+                    viewModel.resetPresetToDefault(preset.id)
+                    editingPreset = null
+                    editingPresetIsNew = false
+                }
+            },
+            onDelete = if (!editingPresetIsNew && !preset.builtIn) {
+                { viewModel.deletePreset(preset.id) }
+            } else {
+                null
             }
         )
     }

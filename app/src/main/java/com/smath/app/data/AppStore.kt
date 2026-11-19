@@ -72,13 +72,32 @@ class AppStore(private val context: Context) {
         if (settings.presets.isEmpty()) {
             settings = settings.copy(presets = DEFAULT_PRESETS)
         }
+        val missingBuiltIns = DEFAULT_PRESETS.filter { preset ->
+            preset.builtIn && settings.presets.none { it.id == preset.id }
+        }
+        val presets = (settings.presets + missingBuiltIns).map { preset ->
+            // 旧版本的“自定义预设”是内置占位项，现在改为可重命名/可删除的普通自定义预设。
+            if (preset.id == "custom" && preset.builtIn) preset.copy(builtIn = false) else preset
+        }
+        val lastPresetId = settings.lastPresetId.takeIf { id -> presets.any { it.id == id } }
+            ?: presets.firstOrNull()?.id.orEmpty()
+        settings = settings.copy(presets = presets, lastPresetId = lastPresetId)
         if (settings.providers.none { it.id == settings.activeProviderId }) {
             val p = settings.providers.first()
             settings = settings.copy(activeProviderId = p.id, activeModel = p.displayModel)
         }
-        val globalPrompt = settings.globalPrompt?.takeIf { it.isNotBlank() }
-            ?: BASE_AGENT_PROMPT
-        settings = settings.copy(globalPrompt = globalPrompt)
+        val savedPrompt = settings.globalPrompt?.trim()
+        val globalPrompt = when {
+            savedPrompt.isNullOrBlank() -> BASE_AGENT_PROMPT
+            // 只迁移未改过的旧默认值，保留用户自定义内容。
+            savedPrompt == LEGACY_BASE_AGENT_PROMPT -> BASE_AGENT_PROMPT
+            else -> savedPrompt
+        }
+        settings = settings.copy(
+            globalPrompt = globalPrompt,
+            thinkingLevel = settings.thinking,
+            drawingCanvasSize = settings.drawingCanvasSize.takeIf { it in 320..1600 } ?: 720
+        )
         return data.copy(settings = settings)
     }
 }

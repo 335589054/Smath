@@ -8,6 +8,7 @@ import com.smath.app.data.ApiErrorInfo
 import com.smath.app.data.ChatMessage
 import com.smath.app.data.Citation
 import com.smath.app.data.ProviderConfig
+import com.smath.app.data.ThinkingLevel
 import com.smath.app.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -50,6 +51,7 @@ class ChatApi {
         model: String,
         systemPrompt: String,
         messages: List<ChatMessage>,
+        thinkingLevel: ThinkingLevel = ThinkingLevel.MEDIUM,
         onReasoning: (String) -> Unit = {},
         onContent: (String) -> Unit = {},
         onCitations: (List<Citation>) -> Unit = {},
@@ -66,7 +68,7 @@ class ChatApi {
                 )
             )
         }
-        val body = buildRequestBody(model, systemPrompt, messages)
+        val body = buildRequestBody(provider, model, systemPrompt, messages, thinkingLevel)
         val request = Request.Builder()
             .url(chatEndpoint(provider.baseUrl))
             .header("Authorization", "Bearer ${provider.apiKey.trim()}")
@@ -323,13 +325,16 @@ class ChatApi {
     }
 
     private fun buildRequestBody(
+        provider: ProviderConfig,
         model: String,
         systemPrompt: String,
-        messages: List<ChatMessage>
+        messages: List<ChatMessage>,
+        thinkingLevel: ThinkingLevel
     ): String {
         val root = JsonObject()
         root.addProperty("model", model)
         root.addProperty("stream", true)
+        applyThinking(root, provider, model, thinkingLevel)
         // 不显式设置 max_tokens：不同 OpenAI 兼容服务商对参数名支持不一致
         // （例如部分推理模型只接受 max_completion_tokens）。长度的兜底交给
         // finish_reason=length 时的自动续写。
@@ -374,6 +379,57 @@ class ChatApi {
         }
         root.add("messages", array)
         return root.toString()
+    }
+
+    /**
+     * DeepSeek 使用 thinking + reasoning_effort；OpenAI 推理模型只接受
+     * reasoning_effort；普通聊天模型和自定义服务商不发送额外参数。
+     */
+    private fun applyThinking(
+        root: JsonObject,
+        provider: ProviderConfig,
+        model: String,
+        level: ThinkingLevel
+    ) {
+        if (provider.kind == "deepseek") {
+            root.add("thinking", JsonObject().apply {
+                addProperty("type", if (level == ThinkingLevel.OFF) "disabled" else "enabled")
+            })
+            if (level == ThinkingLevel.OFF) return
+            // DeepSeek 文档只定义 low/high/max；medium 归到 high。
+            addReasoningEffort(root, when (level) {
+                ThinkingLevel.LOW -> "low"
+                ThinkingLevel.MEDIUM, ThinkingLevel.HIGH -> "high"
+                ThinkingLevel.MAX -> "max"
+                ThinkingLevel.OFF -> return
+            })
+            return
+        }
+
+        val reasoningModel = model.lowercase().let { name ->
+            name.startsWith("o1") || name.startsWith("o3") ||
+                name.startsWith("o4") || "gpt-5" in name || "gpt-6" in name
+        }
+        if (level == ThinkingLevel.OFF) return
+        if (provider.kind == "chatgpt" && reasoningModel) {
+            addReasoningEffort(root, when (level) {
+                ThinkingLevel.LOW -> "low"
+                ThinkingLevel.MEDIUM -> "medium"
+                ThinkingLevel.HIGH, ThinkingLevel.MAX -> "high"
+                ThinkingLevel.OFF -> return
+            })
+        } else if (provider.kind != "deepseek" && provider.supportsThinking) {
+            addReasoningEffort(root, when (level) {
+                ThinkingLevel.LOW -> "low"
+                ThinkingLevel.MEDIUM -> "medium"
+                ThinkingLevel.HIGH, ThinkingLevel.MAX -> "high"
+                ThinkingLevel.OFF -> return
+            })
+        }
+    }
+
+    private fun addReasoningEffort(root: JsonObject, value: String) {
+        root.addProperty("reasoning_effort", value)
     }
 
     private fun parseSearchResults(text: String): List<Citation> {

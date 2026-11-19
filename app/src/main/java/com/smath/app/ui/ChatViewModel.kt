@@ -23,6 +23,7 @@ import com.smath.app.data.ListMode
 import com.smath.app.data.BASE_AGENT_PROMPT
 import com.smath.app.data.ProviderConfig
 import com.smath.app.data.Stage
+import com.smath.app.data.ThinkingLevel
 import com.smath.app.data.buildSystemPrompt
 import com.smath.app.data.defaultSettings
 import com.smath.app.util.TimeUtils
@@ -161,6 +162,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun addPreset(preset: AgentPreset) {
+        val created = preset.copy(
+            id = "custom-${UUID.randomUUID()}",
+            name = preset.name.trim().ifBlank { "自定义预设" },
+            builtIn = false,
+            icon = preset.icon.ifBlank { "custom" }
+        )
+        updateData { data ->
+            data.copy(settings = data.settings.copy(
+                presets = data.settings.presets + created,
+                lastPresetId = created.id
+            ))
+        }
+        if (_activeId.value == null) _selectedPresetId.value = created.id
+    }
+
+    fun deletePreset(presetId: String) {
+        val target = _data.value.settings.presets.firstOrNull { it.id == presetId } ?: return
+        if (target.builtIn) return
+        val remaining = _data.value.settings.presets.filterNot { it.id == presetId }
+        val fallbackId = remaining.firstOrNull()?.id.orEmpty()
+        updateData { data ->
+            data.copy(settings = data.settings.copy(
+                presets = remaining,
+                lastPresetId = if (data.settings.lastPresetId == presetId) {
+                    fallbackId
+                } else {
+                    data.settings.lastPresetId
+                }
+            ))
+        }
+        if (_selectedPresetId.value == presetId) {
+            _selectedPresetId.value = fallbackId
+        }
+    }
+
     fun resetPresetToDefault(presetId: String) {
         val defaults = com.smath.app.data.DEFAULT_PRESETS
         val original = defaults.firstOrNull { it.id == presetId } ?: return
@@ -184,7 +221,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             conv = Conversation(
                 id = UUID.randomUUID().toString(),
                 title = makeTitle(clean, imagePaths.isNotEmpty()),
-                systemPrompt = buildSystemPrompt(preset, _data.value.settings.globalPrompt),
+                systemPrompt = buildSystemPrompt(
+                    preset = preset,
+                    globalPrompt = _data.value.settings.globalPrompt,
+                    drawingEnabled = _data.value.settings.drawingAgentEnabled,
+                    calculatorEnabled = _data.value.settings.calculatorAgentEnabled
+                ),
                 presetId = preset.id,
                 presetName = preset.name,
                 stageLabel = if (preset.stage == Stage.NONE) "" else preset.stage.label,
@@ -335,6 +377,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         model = model,
                         systemPrompt = system,
                         messages = requestHistory,
+                        thinkingLevel = settings.thinking,
                         onReasoning = { chunk ->
                             if (token == generationToken) {
                                 reasoning.append(chunk)
@@ -513,6 +556,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         updateData { it.copy(settings = it.settings.copy(listMode = mode)) }
     }
 
+    fun setThinkingLevel(level: ThinkingLevel) {
+        updateData { it.copy(settings = it.settings.copy(thinkingLevel = level)) }
+    }
+
     fun setDarkMode(mode: String) {
         val safe = mode.takeIf { it in listOf("system", "light", "dark") } ?: "system"
         updateData { it.copy(settings = it.settings.copy(darkMode = safe)) }
@@ -525,6 +572,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun setGlobalPrompt(prompt: String) {
         val clean = prompt.trim().ifBlank { BASE_AGENT_PROMPT }
         updateData { it.copy(settings = it.settings.copy(globalPrompt = clean)) }
+    }
+
+    fun setDrawingAgentEnabled(enabled: Boolean) {
+        updateData { it.copy(settings = it.settings.copy(drawingAgentEnabled = enabled)) }
+    }
+
+    fun setCalculatorAgentEnabled(enabled: Boolean) {
+        updateData { it.copy(settings = it.settings.copy(calculatorAgentEnabled = enabled)) }
+    }
+
+    fun setDrawingCanvasSize(size: Int) {
+        val safe = size.coerceIn(320, 1600)
+        updateData { it.copy(settings = it.settings.copy(drawingCanvasSize = safe)) }
     }
 
     fun createFolder(name: String): String? {

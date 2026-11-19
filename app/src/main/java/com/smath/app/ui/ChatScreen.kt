@@ -6,7 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
+
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -53,16 +53,19 @@ import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Calculate
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Public
@@ -73,6 +76,8 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -88,6 +93,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -127,11 +133,14 @@ import com.smath.app.data.ContextReference
 import com.smath.app.data.Conversation
 import com.smath.app.data.Stage
 import com.smath.app.data.providerKindColor
+import com.smath.app.export.ConversationExport
 import com.smath.app.util.ImageUtils
 import com.smath.app.util.TimeUtils
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val STREAMING_THINKING_KEY = "streaming"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -155,14 +164,21 @@ fun ChatScreen(
     var draftImages by remember(active?.id) { mutableStateOf(emptyList<String>()) }
     var draftContexts by remember(active?.id) { mutableStateOf(emptyList<ContextReference>()) }
     var showModelSheet by remember { mutableStateOf(false) }
-    var showPresetSheet by remember { mutableStateOf(false) }
+    var presetSheetTarget by remember { mutableStateOf<AgentPreset?>(null) }
+    var presetSheetIsNew by remember { mutableStateOf(false) }
     var showAttachSheet by remember { mutableStateOf(false) }
     var showContextSheet by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<String?>(null) }
-    var thinkingExpanded by remember(active?.id) { mutableStateOf(false) }
+    var showJumpSheet by remember { mutableStateOf(false) }
+    // 每条思考单独展开；底部按钮反映“是否有任一思考展开”，
+    // 点击底部按钮则统一展开/收起全部。
+    val thinkingStates = remember(active?.id) { mutableStateMapOf<String, Boolean>() }
     // 拍照期间 Activity 可能被系统回收；rememberSaveable 保证返回后还能找回输出文件。
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraStartedAt by rememberSaveable { mutableLongStateOf(0L) }
+    var exporting by remember { mutableStateOf(false) }
+    var pendingExportKind by remember { mutableStateOf<String?>(null) }
+    var exportTarget by remember { mutableStateOf<Conversation?>(null) }
 
     LaunchedEffect(externalDraftImage) {
         val path = externalDraftImage
@@ -216,6 +232,49 @@ fun ChatScreen(
         }
     }
 
+    fun runExport(uri: Uri?, kind: String) {
+        val conversation = exportTarget
+        val requested = pendingExportKind
+        exportTarget = null
+        pendingExportKind = null
+        if (uri == null || requested == null) return
+        scope.launch {
+            exporting = true
+            try {
+                when (kind) {
+                    "markdown" -> {
+                        val target = conversation ?: return@launch
+                        ConversationExport.writeMarkdown(context, uri, target)
+                        Toast.makeText(context, "已导出 Markdown", Toast.LENGTH_SHORT).show()
+                    }
+                    "zip" -> {
+                        val count = ConversationExport.writeAllZip(
+                            context,
+                            uri,
+                            viewModel.data.value
+                        )
+                        Toast.makeText(context, "已导出 $count 个对话", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (t: Throwable) {
+                Toast.makeText(
+                    context,
+                    "导出失败：${t.message ?: "未知错误"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                exporting = false
+            }
+        }
+    }
+
+    val createMarkdownExport = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/markdown")
+    ) { uri -> runExport(uri, "markdown") }
+    val createZipExport = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> runExport(uri, "zip") }
+
     val launchCamera: () -> Unit = {
         try {
             val file = ImageUtils.cameraFile(context)
@@ -264,6 +323,40 @@ fun ChatScreen(
     val displayPresetId = active?.presetId?.takeIf { it.isNotBlank() } ?: selectedPresetId
     val activePreset = settings.presets.firstOrNull { it.id == displayPresetId }
         ?: settings.presets.firstOrNull()
+    val exportableConversation = active?.takeIf { it.messages.isNotEmpty() && streaming == null }
+
+    val chatMessages = active?.messages.orEmpty()
+    val reasoningIds = chatMessages.filter { it.reasoning.isNotBlank() }.map { it.id }
+    val streamingHasReasoning = !streaming?.reasoning.isNullOrBlank()
+    val hasReasoning = reasoningIds.isNotEmpty() || streamingHasReasoning
+    val anyThinkingExpanded = reasoningIds.any { thinkingStates[it] == true } ||
+        (streamingHasReasoning && thinkingStates[STREAMING_THINKING_KEY] == true)
+    val lastAssistantIndex = chatMessages.indexOfLast { it.isAssistant }
+    val lastAnswerIndex = when {
+        streaming != null -> chatMessages.size
+        lastAssistantIndex >= 0 -> lastAssistantIndex
+        else -> -1
+    }
+    val canJump = chatMessages.isNotEmpty()
+
+    fun jumpToMessage(index: Int) {
+        if (index < 0) return
+        autoScroll = false
+        scope.launch {
+            // 没有消息时会先显示 welcome item，需要多偏移一格。
+            val welcomeOffset = if (chatMessages.isEmpty()) 1 else 0
+            listState.animateScrollToItem(index + welcomeOffset)
+        }
+    }
+
+    fun toggleAllThinking() {
+        if (anyThinkingExpanded) {
+            thinkingStates.keys.toList().forEach { thinkingStates[it] = false }
+        } else {
+            reasoningIds.forEach { thinkingStates[it] = true }
+            if (streamingHasReasoning) thinkingStates[STREAMING_THINKING_KEY] = true
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -282,7 +375,23 @@ fun ChatScreen(
                 viewModel.newChat()
                 autoScroll = true
             },
-            onPickModel = { showModelSheet = true }
+            onPickModel = { showModelSheet = true },
+            onExportMarkdown = exportableConversation?.let { conversation ->
+                {
+                    pendingExportKind = "markdown"
+                    exportTarget = conversation
+                    createMarkdownExport.launch(
+                        ConversationExport.suggestedMarkdownName(conversation)
+                    )
+                }
+            },
+            onExportAll = if (data.conversations.isNotEmpty()) {
+                {
+                    pendingExportKind = "zip"
+                    exportTarget = null
+                    createZipExport.launch(ConversationExport.suggestedZipName())
+                }
+            } else null
         )
 
         Box(modifier = Modifier.weight(1f)) {
@@ -297,26 +406,44 @@ fun ChatScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                if (active == null || active?.messages.isNullOrEmpty()) {
+                if (chatMessages.isEmpty()) {
                     item(key = "welcome") {
                         WelcomePane(
                             presets = settings.presets,
                             selectedPreset = activePreset,
                             onSelectPreset = viewModel::selectPreset,
-                            onTunePreset = { showPresetSheet = true }
+                            onTunePreset = {
+                                presetSheetIsNew = false
+                                presetSheetTarget = activePreset
+                            },
+                            onAddPreset = {
+                                presetSheetIsNew = true
+                                presetSheetTarget = AgentPreset(
+                                    id = "",
+                                    name = "新预设",
+                                    builtIn = false,
+                                    icon = "custom"
+                                )
+                            }
                         )
                     }
                 }
-                val messages = active?.messages.orEmpty()
-                items(messages, key = { it.id }) { message ->
+                items(chatMessages, key = { it.id }) { message ->
                     if (message.isUser) {
                         UserMessage(message, onImageClick = { previewImage = it })
                     } else {
-                        val isLast = active?.messages?.lastOrNull()?.id == message.id
+                        val isLast = chatMessages.lastOrNull()?.id == message.id
                         AssistantMessage(
                             message = message,
                             dark = dark,
-                            thinkingExpanded = thinkingExpanded,
+                            thinkingExpanded = thinkingStates[message.id] == true,
+                            onToggleThinking = {
+                                thinkingStates[message.id] =
+                                    !(thinkingStates[message.id] ?: false)
+                            },
+                            drawingAgentEnabled = settings.drawingAgentEnabled,
+                            calculatorAgentEnabled = settings.calculatorAgentEnabled,
+                            drawingCanvasSize = settings.drawingCanvasSize,
                             canRetry = isLast && message.error != null,
                             onRetry = viewModel::retryLast,
                             onCopy = {
@@ -327,7 +454,18 @@ fun ChatScreen(
                 }
                 if (streaming != null) {
                     item(key = "streaming") {
-                        StreamingBubble(streaming, dark, thinkingExpanded)
+                        StreamingBubble(
+                            streaming = streaming,
+                            dark = dark,
+                            thinkingExpanded = thinkingStates[STREAMING_THINKING_KEY] == true,
+                            onToggleThinking = {
+                                thinkingStates[STREAMING_THINKING_KEY] =
+                                    !(thinkingStates[STREAMING_THINKING_KEY] ?: false)
+                            },
+                            drawingAgentEnabled = settings.drawingAgentEnabled,
+                            calculatorAgentEnabled = settings.calculatorAgentEnabled,
+                            drawingCanvasSize = settings.drawingCanvasSize
+                        )
                     }
                 }
                 item(key = "disclaimer") {
@@ -343,20 +481,7 @@ fun ChatScreen(
                 }
             }
 
-            ScrollToBottomButton(
-                visible = canScrollForward,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 12.dp),
-                onClick = {
-                    autoScroll = true
-                    scope.launch {
-                        val total = listState.layoutInfo.totalItemsCount
-                        if (total > 0) listState.animateScrollToItem(total - 1)
-                    }
-                }
-            )
-        }
+            }
 
         Composer(
             input = input,
@@ -369,10 +494,21 @@ fun ChatScreen(
             onAddContext = { showContextSheet = true },
             webSearch = settings.webSearchByDefault,
             onToggleSearch = { viewModel.setWebSearch(it) },
-            hasReasoning = active?.messages?.any { it.reasoning.isNotBlank() } == true ||
-                !streaming?.reasoning.isNullOrBlank(),
-            thinkingExpanded = thinkingExpanded,
-            onToggleThinking = { thinkingExpanded = !thinkingExpanded },
+            hasReasoning = hasReasoning,
+            thinkingExpanded = anyThinkingExpanded,
+            onToggleThinking = { toggleAllThinking() },
+            canViewAnswer = lastAnswerIndex >= 0,
+            onViewAnswer = { jumpToMessage(lastAnswerIndex) },
+            canJump = canJump,
+            onOpenJump = { showJumpSheet = true },
+            canJumpBottom = canScrollForward,
+            onJumpBottom = {
+                autoScroll = true
+                scope.launch {
+                    val total = listState.layoutInfo.totalItemsCount
+                    if (total > 0) listState.animateScrollToItem(total - 1)
+                }
+            },
             generating = streaming != null,
             onSend = {
                 val text = input
@@ -391,6 +527,18 @@ fun ChatScreen(
         )
     }
 
+    if (showJumpSheet) {
+        ConversationJumpSheet(
+            messages = chatMessages,
+            streaming = streaming,
+            onDismiss = { showJumpSheet = false },
+            onJump = { index ->
+                showJumpSheet = false
+                jumpToMessage(index)
+            }
+        )
+    }
+
     if (showModelSheet) {
         ModelPickerSheet(
             settings = settings,
@@ -399,17 +547,31 @@ fun ChatScreen(
                 viewModel.setActiveProvider(providerId)
                 viewModel.setActiveModel(model)
             },
+            onThinkingLevel = viewModel::setThinkingLevel,
             onManage = onOpenSettings
         )
     }
 
-    if (showPresetSheet && activePreset != null) {
+    presetSheetTarget?.let { target ->
         PresetConfigSheet(
-            preset = activePreset,
-            locked = active != null,
-            onDismiss = { showPresetSheet = false },
-            onSave = viewModel::updatePreset,
-            onReset = { viewModel.resetPresetToDefault(activePreset.id) }
+            preset = target,
+            locked = !presetSheetIsNew && active != null,
+            isNew = presetSheetIsNew,
+            onDismiss = {
+                presetSheetTarget = null
+                presetSheetIsNew = false
+            },
+            onSave = {
+                if (presetSheetIsNew) viewModel.addPreset(it) else viewModel.updatePreset(it)
+            },
+            onReset = {
+                if (!presetSheetIsNew) viewModel.resetPresetToDefault(target.id)
+            },
+            onDelete = if (!presetSheetIsNew && !target.builtIn) {
+                { viewModel.deletePreset(target.id) }
+            } else {
+                null
+            }
         )
     }
 
@@ -446,29 +608,40 @@ fun ChatScreen(
     previewImage?.let { path ->
         ImagePreviewDialog(path = path, onDismiss = { previewImage = null })
     }
+
+    if (exporting) {
+        ExportProgressDialog()
+    }
 }
 
 @Composable
-private fun ScrollToBottomButton(
-    visible: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    AnimatedVisibility(visible = visible, modifier = modifier) {
+private fun ExportProgressDialog() {
+    Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
         Surface(
-            onClick = onClick,
-            shape = CircleShape,
+            shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 3.dp
+            shadowElevation = 8.dp
         ) {
-            Icon(
-                Icons.Rounded.ArrowDownward,
-                contentDescription = "回到底部",
-                modifier = Modifier
-                    .padding(9.dp)
-                    .size(20.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.5.dp
+                )
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    text = "正在导出，请稍候…",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
         }
     }
 }
@@ -480,8 +653,11 @@ private fun ChatTopBar(
     providerColor: Color,
     onMenu: () -> Unit,
     onNewChat: () -> Unit,
-    onPickModel: () -> Unit
+    onPickModel: () -> Unit,
+    onExportMarkdown: (() -> Unit)?,
+    onExportAll: (() -> Unit)?
 ) {
+    var exportMenuOpen by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -535,6 +711,33 @@ private fun ChatTopBar(
                     }
                 }
             }
+            Box {
+                IconButton(onClick = { exportMenuOpen = true }) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "导出对话")
+                }
+                DropdownMenu(
+                    expanded = exportMenuOpen,
+                    onDismissRequest = { exportMenuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("导出当前对话为 Markdown") },
+                        enabled = onExportMarkdown != null,
+                        onClick = {
+                            exportMenuOpen = false
+                            onExportMarkdown?.invoke()
+                        }
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("导出全部对话（ZIP）") },
+                        enabled = onExportAll != null,
+                        onClick = {
+                            exportMenuOpen = false
+                            onExportAll?.invoke()
+                        }
+                    )
+                }
+            }
             IconButton(onClick = onNewChat) {
                 Icon(Icons.Rounded.Add, contentDescription = "新对话")
             }
@@ -548,7 +751,8 @@ private fun WelcomePane(
     presets: List<AgentPreset>,
     selectedPreset: AgentPreset?,
     onSelectPreset: (String) -> Unit,
-    onTunePreset: () -> Unit
+    onTunePreset: () -> Unit,
+    onAddPreset: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -617,6 +821,36 @@ private fun WelcomePane(
                         )
                     }
                     if (rowPresets.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+            Spacer(Modifier.height(9.dp))
+            Surface(
+                onClick = onAddPreset,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "新建预设",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
@@ -809,6 +1043,10 @@ private fun AssistantMessage(
     message: ChatMessage,
     dark: Boolean,
     thinkingExpanded: Boolean,
+    onToggleThinking: () -> Unit,
+    drawingAgentEnabled: Boolean,
+    calculatorAgentEnabled: Boolean,
+    drawingCanvasSize: Int,
     canRetry: Boolean,
     onRetry: () -> Unit,
     onCopy: () -> Unit
@@ -820,15 +1058,20 @@ private fun AssistantMessage(
                 finishedMs = message.thinkingMs,
                 streaming = false,
                 dark = dark,
-                globalExpanded = thinkingExpanded
+                expanded = thinkingExpanded,
+                onToggleExpanded = onToggleThinking
             )
                 Spacer(Modifier.height(10.dp))
             }
             message.notice?.let { NoticeChip(it) }
             if (message.content.isNotBlank()) {
-                MarkdownView(
+                SpecialAgentContent(
                     markdown = message.content,
                     dark = dark,
+                    drawingEnabled = drawingAgentEnabled,
+                    calculatorEnabled = calculatorAgentEnabled,
+                    drawingCanvasSize = drawingCanvasSize,
+                    streaming = false,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -871,7 +1114,11 @@ private fun AssistantMessage(
 private fun StreamingBubble(
     streaming: StreamingMessage,
     dark: Boolean,
-    thinkingExpanded: Boolean
+    thinkingExpanded: Boolean,
+    onToggleThinking: () -> Unit,
+    drawingAgentEnabled: Boolean,
+    calculatorAgentEnabled: Boolean,
+    drawingCanvasSize: Int
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         if (streaming.reasoning.isNotBlank()) {
@@ -881,7 +1128,8 @@ private fun StreamingBubble(
                 streaming = streaming.content.isBlank(),
                 startedAt = streaming.startedAt,
                 dark = dark,
-                globalExpanded = thinkingExpanded
+                expanded = thinkingExpanded,
+                onToggleExpanded = onToggleThinking
             )
                 Spacer(Modifier.height(10.dp))
             }
@@ -904,9 +1152,13 @@ private fun StreamingBubble(
                     )
                 }
             } else {
-                MarkdownView(
+                SpecialAgentContent(
                     markdown = streaming.content,
                     dark = dark,
+                    drawingEnabled = drawingAgentEnabled,
+                    calculatorEnabled = calculatorAgentEnabled,
+                    drawingCanvasSize = drawingCanvasSize,
+                    streaming = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
@@ -919,6 +1171,180 @@ private fun StreamingBubble(
         }
     }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConversationJumpSheet(
+    messages: List<ChatMessage>,
+    streaming: StreamingMessage?,
+    onDismiss: () -> Unit,
+    onJump: (Int) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "跳转到会话位置",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "选择一条消息，滚动到它的开头",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("关闭")
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                items(messages.size) { index ->
+                    val message = messages[index]
+                    val snippet = message.jumpSnippet()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onJump(index) }
+                            .padding(horizontal = 20.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = if (message.isUser) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = if (message.isUser) "你" else "AI",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (message.isUser) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (message.isUser) "你的提问" else "AI 回答",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    text = "#${index + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                text = snippet,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            Text(
+                                text = TimeUtils.formatRelative(message.createdAt),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 60.dp)
+                    )
+                }
+                if (streaming != null) {
+                    item(key = "jump-streaming") {
+                        val snippet = streaming.content.ifBlank { streaming.reasoning }
+                            .lineSequence()
+                            .map { it.trim() }
+                            .firstOrNull { it.isNotBlank() }
+                            .orEmpty()
+                            .take(100)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onJump(messages.size) }
+                                .padding(horizontal = 20.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = "AI",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (streaming.content.isBlank()) "AI 正在思考" else "AI 正在回答",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = snippet.ifBlank { "正在生成…" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun ChatMessage.jumpSnippet(): String {
+    val raw = content.ifBlank {
+        reasoning.ifBlank {
+            if (imagePaths.isNotEmpty()) "图片消息" else "（无内容）"
+        }
+    }
+    return raw.lineSequence()
+        .map { it.trim().trimStart('#', '>', '*', '-', ' ') }
+        .firstOrNull { it.isNotBlank() }
+        .orEmpty()
+        .take(100)
+}
+
 @Composable
 private fun ReasoningBlock(
     reasoning: String,
@@ -926,11 +1352,9 @@ private fun ReasoningBlock(
     streaming: Boolean,
     dark: Boolean,
     startedAt: Long = 0L,
-    globalExpanded: Boolean = false
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit
 ) {
-    // 默认折叠；用户主动展开后即使生成结束也保持展开。
-    var expanded by remember { mutableStateOf(false) }
-    LaunchedEffect(globalExpanded) { expanded = globalExpanded }
     val lastLine = reasoning.lineSequence()
         .map { it.trim().trimStart('>', '#', '*', '-', ' ').trim() }
         .lastOrNull { it.isNotBlank() }
@@ -954,7 +1378,7 @@ private fun ReasoningBlock(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded }
+                    .clickable { onToggleExpanded() }
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1260,6 +1684,12 @@ private fun Composer(
     hasReasoning: Boolean,
     thinkingExpanded: Boolean,
     onToggleThinking: () -> Unit,
+    canViewAnswer: Boolean,
+    onViewAnswer: () -> Unit,
+    canJump: Boolean,
+    onOpenJump: () -> Unit,
+    canJumpBottom: Boolean,
+    onJumpBottom: () -> Unit,
     generating: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit
@@ -1276,6 +1706,7 @@ private fun Composer(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1338,6 +1769,96 @@ private fun Composer(
                             style = MaterialTheme.typography.labelMedium,
                             color = if (thinkingExpanded) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            if (canViewAnswer) {
+                Spacer(Modifier.width(7.dp))
+                Surface(
+                    onClick = onViewAnswer,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Rounded.ArrowDownward,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "看回答",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            if (canJump) {
+                Spacer(Modifier.width(7.dp))
+                Surface(
+                    onClick = onOpenJump,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Rounded.FormatListBulleted,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "跳转",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            if (canJumpBottom) {
+                Spacer(Modifier.width(7.dp))
+                Surface(
+                    onClick = onJumpBottom,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Rounded.ArrowDownward,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "到底部",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -1590,6 +2111,7 @@ private fun presetIcon(preset: AgentPreset): ImageVector = when (preset.icon) {
     "math" -> Icons.Rounded.Calculate
     "english" -> Icons.Rounded.Translate
     "knowledge" -> Icons.Rounded.MenuBook
+    "socratic" -> Icons.Rounded.Lightbulb
     else -> Icons.Rounded.Tune
 }
 

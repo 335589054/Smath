@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -54,6 +55,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +65,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.smath.app.util.ImageUtils
 import kotlin.math.abs
 import kotlin.math.min
@@ -86,6 +90,8 @@ fun CropScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val bitmap by produceState<Bitmap?>(initialValue = null, sourcePath) {
         value = withContext(Dispatchers.IO) { ImageUtils.loadBitmap(sourcePath, 2600) }
@@ -98,9 +104,17 @@ fun CropScreen(
 
     BackHandler(enabled = !saving, onBack = onCancel)
 
+    LaunchedEffect(Unit) {
+        focusManager.clearFocus()
+        keyboard?.hide()
+        // 相机返回时窗口焦点恢复可能会让 IME 再弹一次，补一次延迟收起。
+        view.postDelayed({ keyboard?.hide() }, 160L)
+    }
+
     DisposableEffect(Unit) {
         val window = (view.context as? android.app.Activity)?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        controller?.hide(WindowInsetsCompat.Type.ime())
         controller?.isAppearanceLightStatusBars = false
         controller?.isAppearanceLightNavigationBars = false
         onDispose {

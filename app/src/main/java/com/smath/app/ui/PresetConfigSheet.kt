@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -50,14 +51,17 @@ fun PresetConfigSheet(
     locked: Boolean,
     onDismiss: () -> Unit,
     onSave: (AgentPreset) -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    isNew: Boolean = false,
+    onDelete: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val isCustom = preset.id == "custom"
+    val nameEditable = isNew || !preset.builtIn
     var name by remember(preset.id) { mutableStateOf(preset.name) }
     var stage by remember(preset.id) { mutableStateOf(preset.stage) }
     var styles by remember(preset.id) { mutableStateOf(preset.effectiveStyles.toSet()) }
     var instruction by remember(preset.id) { mutableStateOf(preset.customInstruction) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -82,7 +86,7 @@ fun PresetConfigSheet(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "「${if (isCustom) name.ifBlank { "自定义预设" } else preset.name}」的思考方式与回答风格",
+                text = "「${if (nameEditable) name.ifBlank { "自定义预设" } else preset.name}」的思考方式与回答风格",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -113,7 +117,7 @@ fun PresetConfigSheet(
             }
 
             Spacer(Modifier.height(22.dp))
-            if (isCustom) {
+            if (nameEditable) {
                 SectionLabel("预设名称")
                 OutlinedTextField(
                     value = name,
@@ -200,6 +204,11 @@ fun PresetConfigSheet(
                         onDismiss()
                     }) { Text("恢复默认") }
                 }
+                if (!preset.builtIn && !isNew && onDelete != null && !locked) {
+                    TextButton(onClick = { confirmDelete = true }) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(10.dp))
@@ -208,7 +217,7 @@ fun PresetConfigSheet(
                         if (!locked) {
                             onSave(
                                 preset.copy(
-                                    name = if (isCustom) {
+                                    name = if (nameEditable) {
                                         name.trim().ifBlank { "自定义预设" }
                                     } else {
                                         preset.name
@@ -224,5 +233,23 @@ fun PresetConfigSheet(
                 ) { Text(if (locked) "关闭" else "完成") }
             }
         }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除预设？") },
+            text = { Text("删除后无法恢复。已经开始的对话不会受影响。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete?.invoke()
+                    onDismiss()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+            }
+        )
     }
 }
