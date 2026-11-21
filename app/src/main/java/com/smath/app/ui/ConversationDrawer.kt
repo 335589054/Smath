@@ -38,16 +38,12 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -62,7 +58,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -625,18 +620,19 @@ private fun FolderHeader(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(
-                    text = { Text("重命名") },
-                    leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+            SmathMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                SmathMenuItem(
+                    text = "重命名",
+                    icon = Icons.Rounded.Edit,
                     onClick = {
                         menu = false
                         onRename()
                     }
                 )
-                DropdownMenuItem(
-                    text = { Text("删除文件夹") },
-                    leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                SmathMenuItem(
+                    text = "删除文件夹",
+                    icon = Icons.Rounded.Delete,
+                    destructive = true,
                     onClick = {
                         menu = false
                         onDelete()
@@ -708,34 +704,35 @@ private fun ConversationRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                SmathMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    SmathMenuItem(
+                        text = "重命名",
+                        icon = Icons.Rounded.Edit,
                         onClick = {
                             menu = false
                             onRename()
                         }
                     )
-                    DropdownMenuItem(
-                        text = { Text(if (conversation.pinned) "取消置顶" else "置顶") },
-                        leadingIcon = { Icon(Icons.Rounded.PushPin, contentDescription = null) },
+                    SmathMenuItem(
+                        text = if (conversation.pinned) "取消置顶" else "置顶",
+                        icon = Icons.Rounded.PushPin,
                         onClick = {
                             menu = false
                             onPin()
                         }
                     )
-                    DropdownMenuItem(
-                        text = { Text("移动到文件夹") },
-                        leadingIcon = { Icon(Icons.Rounded.DriveFileMove, contentDescription = null) },
+                    SmathMenuItem(
+                        text = "移动到文件夹",
+                        icon = Icons.Rounded.DriveFileMove,
                         onClick = {
                             menu = false
                             onMove()
                         }
                     )
-                    DropdownMenuItem(
-                        text = { Text("删除") },
-                        leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                    SmathMenuItem(
+                        text = "删除",
+                        icon = Icons.Rounded.Delete,
+                        destructive = true,
                         onClick = {
                             menu = false
                             onDelete()
@@ -757,35 +754,15 @@ private fun TextInputDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
-    var value by remember(initial) { mutableStateOf(initial) }
-    val focusManager = LocalFocusManager.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                label = { Text(label) },
-                placeholder = { if (placeholder.isNotBlank()) Text(placeholder) },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            TextButton(
-                enabled = value.isNotBlank(),
-                onClick = {
-                    focusManager.clearFocus()
-                    onConfirm(value.trim())
-                }
-            ) { Text(confirmLabel) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        },
-        shape = RoundedCornerShape(24.dp)
+    SmathTextFieldDialog(
+        title = title,
+        label = label,
+        initial = initial,
+        placeholder = placeholder,
+        confirmLabel = confirmLabel,
+        icon = Icons.Rounded.Edit,
+        onDismiss = onDismiss,
+        onConfirm = onConfirm
     )
 }
 
@@ -798,23 +775,14 @@ private fun ConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(message) },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(
-                    confirmLabel,
-                    color = if (destructive) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.primary
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        },
-        shape = RoundedCornerShape(24.dp)
+    SmathConfirmDialog(
+        title = title,
+        message = message,
+        confirmLabel = confirmLabel,
+        destructive = destructive,
+        icon = Icons.Rounded.Delete,
+        onDismiss = onDismiss,
+        onConfirm = onConfirm
     )
 }
 

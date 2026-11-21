@@ -46,6 +46,14 @@ enum class AnswerStyle(val label: String, val prompt: String) {
     ESSENTIAL(
         "从更本质的方法回答",
         "优先从更本质的原理、定义或第一性原理出发回答，而不是只给结论或套公式。"
+    ),
+    OUTLINE_FIRST(
+        "先总体思路再详细过程",
+        "先用一小段说明总体思路、解题框架或行文脉络，再展开详细推导和计算过程。"
+    ),
+    VISUAL_RICH(
+        "图文并茂",
+        "在关键处配合图形说明，比如用绘图工具画出函数图像、几何关系或示意图，让读者能同时看到图与文字。"
     )
 }
 
@@ -98,7 +106,8 @@ data class AgentPreset(
                 AnswerStyle.ACCESSIBLE,
                 AnswerStyle.RIGOROUS,
                 AnswerStyle.ELEGANT,
-                AnswerStyle.ESSENTIAL
+                AnswerStyle.ESSENTIAL,
+                AnswerStyle.OUTLINE_FIRST
             )
         } else {
             AnswerStyle.entries.toList()
@@ -248,7 +257,11 @@ fun buildSystemPrompt(
     }
     parts += REASONING_QUALITY_PROMPT
     if (preset.stage.prompt.isNotBlank()) parts += preset.stage.prompt
-    preset.effectiveStyles.forEach { parts += it.prompt }
+    preset.effectiveStyles.forEach { style ->
+        // “图文并茂”依赖绘图工具；未开启绘图 agent 时不注入，避免模型给出无法渲染的指令。
+        if (style == AnswerStyle.VISUAL_RICH && !drawingEnabled) return@forEach
+        parts += style.prompt
+    }
     if (preset.customInstruction.isNotBlank()) parts += preset.customInstruction.trim()
     if (drawingEnabled) parts += drawingAgentPrompt()
     if (calculatorEnabled) parts += CALCULATOR_AGENT_PROMPT

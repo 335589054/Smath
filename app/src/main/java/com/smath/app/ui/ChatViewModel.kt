@@ -130,12 +130,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newChat() {
+        if (_activeId.value == null) {
+            _events.tryEmit("已在新会话中")
+            return
+        }
         if (generationJob?.isActive == true) generationJob?.cancel()
         _activeId.value = null
         val last = _data.value.settings.lastPresetId
         _selectedPresetId.value = _data.value.settings.presets
             .firstOrNull { it.id == last }?.id
             ?: _data.value.settings.presets.firstOrNull()?.id.orEmpty()
+    }
+
+    /** direction 为 -1 上移、1 下移；排序结果会直接保存并同步到首页预设列表。 */
+    fun movePreset(presetId: String, direction: Int) {
+        updateData { data ->
+            val list = data.settings.presets.toMutableList()
+            val index = list.indexOfFirst { it.id == presetId }
+            if (index < 0) return@updateData data
+            val target = (index + direction).coerceIn(0, list.lastIndex)
+            if (target == index) return@updateData data
+            val item = list.removeAt(index)
+            list.add(target, item)
+            data.copy(settings = data.settings.copy(presets = list))
+        }
     }
 
     fun openConversation(id: String) {
@@ -176,6 +194,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ))
         }
         if (_activeId.value == null) _selectedPresetId.value = created.id
+    }
+
+    /** 导入的预设一律作为新的自定义预设追加，并自动处理重名。 */
+    fun importPresets(presets: List<AgentPreset>) {
+        if (presets.isEmpty()) return
+        val used = _data.value.settings.presets.map { it.name }.toMutableSet()
+        val created = presets.map { preset ->
+            val base = preset.name.trim().ifBlank { "自定义预设" }
+            var candidate = base
+            var index = 2
+            while (candidate in used) {
+                candidate = "$base ($index)"
+                index++
+            }
+            used += candidate
+            preset.copy(
+                id = "custom-${UUID.randomUUID()}",
+                name = candidate,
+                builtIn = false,
+                icon = preset.icon.ifBlank { "custom" }
+            )
+        }
+        updateData { data ->
+            data.copy(settings = data.settings.copy(presets = data.settings.presets + created))
+        }
+        _events.tryEmit("已导入 ${created.size} 个预设")
     }
 
     fun deletePreset(presetId: String) {

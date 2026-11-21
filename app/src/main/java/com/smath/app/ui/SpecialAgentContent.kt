@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Calculate
@@ -22,16 +23,16 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -79,23 +80,17 @@ private val specialBlockRegex = Regex(
 fun SpecialAgentContent(
     markdown: String,
     dark: Boolean,
-    drawingEnabled: Boolean,
-    calculatorEnabled: Boolean,
     drawingCanvasSize: Int,
     streaming: Boolean,
     modifier: Modifier = Modifier
 ) {
-    if ((!drawingEnabled && !calculatorEnabled) || markdown.isBlank()) {
+    // 绘图/计算器的开关只决定是否向模型注入协议提示词；
+    // 解析本身始终开启，否则关闭开关后历史会话里的图表会突然消失。
+    if (markdown.isBlank()) {
         MarkdownView(markdown = markdown, dark = dark, modifier = modifier)
         return
     }
-    val enabledKinds = buildSet {
-        if (drawingEnabled) add("paint")
-        if (calculatorEnabled) add("calc")
-    }
-    val matches = specialBlockRegex.findAll(markdown)
-        .filter { it.groupValues[1] in enabledKinds }
-        .toList()
+    val matches = specialBlockRegex.findAll(markdown).toList()
     if (matches.isEmpty()) {
         MarkdownView(markdown = markdown, dark = dark, modifier = modifier)
         return
@@ -562,46 +557,31 @@ private fun PaintEditorDialog(
     onApply: (String) -> Unit
 ) {
     var text by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Rounded.Code,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("编辑绘图命令")
-            }
-        },
-        text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 220.dp, max = 420.dp),
-                textStyle = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp
-                ),
-                singleLine = false,
-                maxLines = 18
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onApply(text) }) {
-                Text("执行")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
+    SmathDialog(
+        title = "编辑绘图命令",
+        subtitle = "修改后点击执行，画布会立即按新命令重绘",
+        icon = Icons.Rounded.Code,
+        onDismiss = onDismiss,
+        footer = {
+            OutlinedButton(onClick = onDismiss, shape = CircleShape) { Text("取消") }
+            Button(onClick = { onApply(text) }, shape = CircleShape) { Text("执行") }
         }
-    )
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 200.dp, max = 380.dp),
+            textStyle = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp
+            ),
+            shape = RoundedCornerShape(16.dp),
+            singleLine = false,
+            maxLines = 18
+        )
+    }
 }
 
 @Composable

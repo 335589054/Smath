@@ -42,6 +42,8 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
@@ -51,12 +53,14 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.SettingsBrightness
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -66,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,8 +90,12 @@ import com.smath.app.data.AgentPreset
 import com.smath.app.data.BASE_AGENT_PROMPT
 import com.smath.app.data.ListMode
 import com.smath.app.data.ProviderConfig
+import com.smath.app.data.PresetTransfer
 import com.smath.app.data.providerKindColor
 import com.smath.app.screenshot.ScreenshotOverlayService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -101,7 +110,65 @@ fun SettingsScreen(
     var editingPreset by remember { mutableStateOf<AgentPreset?>(null) }
     var editingPresetIsNew by remember { mutableStateOf(false) }
     var editingGlobalPrompt by remember { mutableStateOf(false) }
+    var selectingPresets by remember { mutableStateOf(false) }
+    var selectedPresetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var presetTransferBusy by remember { mutableStateOf(false) }
+    var pendingPresetExport by remember { mutableStateOf<List<AgentPreset>>(emptyList()) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val createPresetZip = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val presets = pendingPresetExport
+        pendingPresetExport = emptyList()
+        if (uri == null || presets.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            presetTransferBusy = true
+            try {
+                val count = withContext(Dispatchers.IO) {
+                    PresetTransfer.write(context, uri, presets)
+                }
+                Toast.makeText(context, "已导出 $count 个预设", Toast.LENGTH_SHORT).show()
+            } catch (t: Throwable) {
+                Toast.makeText(
+                    context,
+                    "导出失败：${t.message ?: "未知错误"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                presetTransferBusy = false
+            }
+        }
+    }
+    val openPresetZip = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            presetTransferBusy = true
+            try {
+                val imported = withContext(Dispatchers.IO) {
+                    PresetTransfer.read(context, uri)
+                }
+                if (imported.isEmpty()) {
+                    Toast.makeText(context, "没有找到可导入的预设", Toast.LENGTH_LONG).show()
+                } else {
+                    viewModel.importPresets(imported)
+                    selectingPresets = false
+                    selectedPresetIds = emptySet()
+                }
+            } catch (t: Throwable) {
+                Toast.makeText(
+                    context,
+                    "导入失败：${t.message ?: "文件格式不正确"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                presetTransferBusy = false
+            }
+        }
+    }
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -243,10 +310,85 @@ fun SettingsScreen(
                 )
             }
             items(settings.presets, key = { "preset_${it.id}" }) { preset ->
-                PresetRow(preset = preset, onClick = {
-                    editingPresetIsNew = false
-                    editingPreset = preset
-                })
+                val index = settings.presets.indexOfFirst { it.id == preset.id }
+                PresetRow(
+                    preset = preset,
+                    selecting = selectingPresets,
+                    selected = preset.id in selectedPresetIds,
+                    canMoveUp = index > 0,
+                    canMoveDown = index in 0 until settings.presets.lastIndex,
+                    onMoveUp = { viewModel.movePreset(preset.id, -1) },
+                    onMoveDown = { viewModel.movePreset(preset.id, 1) },
+                    onClick = {
+                        if (selectingPresets) {
+                            selectedPresetIds = if (preset.id in selectedPresetIds) {
+                                selectedPresetIds - preset.id
+                            } else {
+                                selectedPresetIds + preset.id
+                            }
+                        } else {
+                            editingPresetIsNew = false
+                            editingPreset = preset
+                        }
+                    }
+                )
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = {
+                        openPresetZip.launch(arrayOf("application/zip", "application/json"))
+                    }, enabled = !presetTransferBusy) {
+                        Text("导入")
+                    }
+                    TextButton(
+                        onClick = {
+                            val targets = settings.presets.filter { it.id in selectedPresetIds }
+                            if (targets.isEmpty()) return@TextButton
+                            pendingPresetExport = targets
+                            createPresetZip.launch(PresetTransfer.suggestedZipName())
+                        },
+                        enabled = !presetTransferBusy && selectedPresetIds.isNotEmpty()
+                    ) {
+                        Text(
+                            if (selectedPresetIds.isEmpty()) {
+                                "导出所选"
+                            } else {
+                                "导出所选 (${selectedPresetIds.size})"
+                            }
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (selectingPresets) {
+                        TextButton(onClick = {
+                            selectedPresetIds = if (selectedPresetIds.size == settings.presets.size) {
+                                emptySet()
+                            } else {
+                                settings.presets.map { it.id }.toSet()
+                            }
+                        }) {
+                            Text(
+                                if (selectedPresetIds.size == settings.presets.size) {
+                                    "取消全选"
+                                } else {
+                                    "全选"
+                                }
+                            )
+                        }
+                    }
+                    TextButton(onClick = {
+                        selectingPresets = !selectingPresets
+                        selectedPresetIds = if (selectingPresets) {
+                            settings.presets.map { it.id }.toSet()
+                        } else {
+                            emptySet()
+                        }
+                    }) {
+                        Text(if (selectingPresets) "完成" else "多选")
+                    }
+                }
             }
             item {
                 TextButton(
@@ -265,6 +407,9 @@ fun SettingsScreen(
                     Spacer(Modifier.width(6.dp))
                     Text("新建预设")
                 }
+            }
+            if (presetTransferBusy) {
+                item { LoadingRow("正在处理预设文件…") }
             }
 
             item { Spacer(Modifier.height(12.dp)) }
@@ -531,22 +676,16 @@ fun SettingsScreen(
     }
 
     deleteTarget?.let { provider ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除服务商？") },
-            text = { Text("将移除「${provider.name}」及其本地 API Key 配置。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteProvider(provider.id)
-                    deleteTarget = null
-                }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
-            },
-            shape = RoundedCornerShape(24.dp)
+        SmathConfirmDialog(
+            title = "删除服务商？",
+            message = "将移除「${provider.name}」及其本地 API Key 配置。",
+            confirmLabel = "删除",
+            destructive = true,
+            onDismiss = { deleteTarget = null },
+            onConfirm = {
+                viewModel.deleteProvider(provider.id)
+                deleteTarget = null
+            }
         )
     }
 
@@ -573,7 +712,8 @@ fun SettingsScreen(
                 { viewModel.deletePreset(preset.id) }
             } else {
                 null
-            }
+            },
+            drawingEnabled = settings.drawingAgentEnabled
         )
     }
 
@@ -640,38 +780,29 @@ private fun GlobalPromptDialog(
     onSave: (String) -> Unit
 ) {
     var text by remember(initial) { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("全局提示词") },
-        text = {
-            Column {
-                Text(
-                    "会作为每个新对话系统提示词的第一部分；清空后恢复默认内容。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 8,
-                    maxLines = 14,
-                    textStyle = MaterialTheme.typography.bodySmall
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(text) }) { Text("保存") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = { text = BASE_AGENT_PROMPT }) { Text("恢复默认") }
-                TextButton(onClick = onDismiss) { Text("取消") }
-            }
-        },
-        shape = RoundedCornerShape(24.dp)
-    )
+    SmathDialog(
+        title = "全局提示词",
+        subtitle = "会作为每个新对话系统提示词的第一部分；清空后恢复默认内容。",
+        icon = Icons.Rounded.SettingsBrightness,
+        onDismiss = onDismiss,
+        footer = {
+            TextButton(onClick = { text = BASE_AGENT_PROMPT }) { Text("恢复默认") }
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = onDismiss) { Text("取消") }
+            Spacer(Modifier.width(10.dp))
+            Button(onClick = { onSave(text) }) { Text("保存") }
+        }
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 8,
+            maxLines = 14,
+            shape = RoundedCornerShape(16.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+    }
 }
 
 @Composable
@@ -1138,21 +1269,42 @@ private fun SearchSettingsCard(
 }
 
 @Composable
-private fun PresetRow(preset: AgentPreset, onClick: () -> Unit) {
+private fun PresetRow(
+    preset: AgentPreset,
+    selecting: Boolean,
+    selected: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onClick: () -> Unit
+) {
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(15.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = if (selected && selecting) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            MaterialTheme.colorScheme.outlineVariant
+            if (selected && selecting) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            }
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.padding(start = if (selecting) 4.dp else 14.dp, end = 6.dp)
+                .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selecting) {
+                Checkbox(checked = selected, onCheckedChange = { onClick() })
+            }
             Column(Modifier.weight(1f)) {
                 Text(
                     preset.name,
@@ -1164,12 +1316,36 @@ private fun PresetRow(preset: AgentPreset, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                Icons.Rounded.ChevronRight,
-                contentDescription = null,
-                modifier = Modifier.size(19.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            IconButton(
+                onClick = onMoveUp,
+                enabled = canMoveUp,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.KeyboardArrowUp,
+                    contentDescription = "上移",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            IconButton(
+                onClick = onMoveDown,
+                enabled = canMoveDown,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = "下移",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            if (!selecting) {
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

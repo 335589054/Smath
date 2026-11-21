@@ -65,6 +65,8 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Psychology
@@ -76,8 +78,6 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -441,8 +441,6 @@ fun ChatScreen(
                                 thinkingStates[message.id] =
                                     !(thinkingStates[message.id] ?: false)
                             },
-                            drawingAgentEnabled = settings.drawingAgentEnabled,
-                            calculatorAgentEnabled = settings.calculatorAgentEnabled,
                             drawingCanvasSize = settings.drawingCanvasSize,
                             canRetry = isLast && message.error != null,
                             onRetry = viewModel::retryLast,
@@ -462,8 +460,6 @@ fun ChatScreen(
                                 thinkingStates[STREAMING_THINKING_KEY] =
                                     !(thinkingStates[STREAMING_THINKING_KEY] ?: false)
                             },
-                            drawingAgentEnabled = settings.drawingAgentEnabled,
-                            calculatorAgentEnabled = settings.calculatorAgentEnabled,
                             drawingCanvasSize = settings.drawingCanvasSize
                         )
                     }
@@ -571,7 +567,8 @@ fun ChatScreen(
                 { viewModel.deletePreset(target.id) }
             } else {
                 null
-            }
+            },
+            drawingEnabled = settings.drawingAgentEnabled
         )
     }
 
@@ -715,21 +712,22 @@ private fun ChatTopBar(
                 IconButton(onClick = { exportMenuOpen = true }) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = "导出对话")
                 }
-                DropdownMenu(
+                SmathMenu(
                     expanded = exportMenuOpen,
                     onDismissRequest = { exportMenuOpen = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("导出当前对话为 Markdown") },
+                    SmathMenuItem(
+                        text = "导出当前对话为 Markdown",
+                        icon = Icons.Rounded.Description,
                         enabled = onExportMarkdown != null,
                         onClick = {
                             exportMenuOpen = false
                             onExportMarkdown?.invoke()
                         }
                     )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("导出全部对话（ZIP）") },
+                    SmathMenuItem(
+                        text = "导出全部对话（ZIP）",
+                        icon = Icons.Rounded.FolderZip,
                         enabled = onExportAll != null,
                         onClick = {
                             exportMenuOpen = false
@@ -1044,8 +1042,6 @@ private fun AssistantMessage(
     dark: Boolean,
     thinkingExpanded: Boolean,
     onToggleThinking: () -> Unit,
-    drawingAgentEnabled: Boolean,
-    calculatorAgentEnabled: Boolean,
     drawingCanvasSize: Int,
     canRetry: Boolean,
     onRetry: () -> Unit,
@@ -1068,8 +1064,6 @@ private fun AssistantMessage(
                 SpecialAgentContent(
                     markdown = message.content,
                     dark = dark,
-                    drawingEnabled = drawingAgentEnabled,
-                    calculatorEnabled = calculatorAgentEnabled,
                     drawingCanvasSize = drawingCanvasSize,
                     streaming = false,
                     modifier = Modifier.fillMaxWidth()
@@ -1116,8 +1110,6 @@ private fun StreamingBubble(
     dark: Boolean,
     thinkingExpanded: Boolean,
     onToggleThinking: () -> Unit,
-    drawingAgentEnabled: Boolean,
-    calculatorAgentEnabled: Boolean,
     drawingCanvasSize: Int
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1155,8 +1147,6 @@ private fun StreamingBubble(
                 SpecialAgentContent(
                     markdown = streaming.content,
                     dark = dark,
-                    drawingEnabled = drawingAgentEnabled,
-                    calculatorEnabled = calculatorAgentEnabled,
                     drawingCanvasSize = drawingCanvasSize,
                     streaming = true,
                     modifier = Modifier.fillMaxWidth()

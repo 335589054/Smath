@@ -15,7 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -53,7 +52,8 @@ fun PresetConfigSheet(
     onSave: (AgentPreset) -> Unit,
     onReset: () -> Unit,
     isNew: Boolean = false,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    drawingEnabled: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val nameEditable = isNew || !preset.builtIn
@@ -161,15 +161,24 @@ fun PresetConfigSheet(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 preset.availableStyles.forEach { option ->
+                    val needsDrawing = option == AnswerStyle.VISUAL_RICH && !drawingEnabled
                     FilterChip(
                         selected = styles.contains(option),
-                        enabled = !locked,
+                        enabled = !locked && !needsDrawing,
                         onClick = {
                             styles = if (styles.contains(option)) styles - option else styles + option
                         },
                         label = { Text(option.label) }
                     )
                 }
+            }
+            if (!drawingEnabled) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "「图文并茂」需要先在设置中开启绘图 Agent。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Spacer(Modifier.height(22.dp))
@@ -236,19 +245,16 @@ fun PresetConfigSheet(
     }
 
     if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("删除预设？") },
-            text = { Text("删除后无法恢复。已经开始的对话不会受影响。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDelete?.invoke()
-                    onDismiss()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+        SmathConfirmDialog(
+            title = "删除预设？",
+            message = "删除后无法恢复。已经开始的对话不会受影响。",
+            confirmLabel = "删除",
+            destructive = true,
+            onDismiss = { confirmDelete = false },
+            onConfirm = {
+                confirmDelete = false
+                onDelete?.invoke()
+                onDismiss()
             }
         )
     }
