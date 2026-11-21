@@ -2,6 +2,15 @@
 
 Smath 是一个原生 Android（Kotlin + Jetpack Compose）的对话式 AI Agent。界面参考 DeepSeek 消费端 App，只保留文字对话与图片输入。
 
+## 下载
+
+最新安装包见 [Releases](https://github.com/335589054/Smath/releases/latest)（当前 1.4.0，Android 8.0+）。
+
+```
+https://github.com/335589054/Smath/releases/download/v1.4.0/Smath-1.4.0-release.apk
+SHA-256: EE93691460AD30D0EAA9ED88FB8BD53E55991464F7A7FFF46F764179757ADE2A
+```
+
 ## 功能
 
 - **模型和 API Key**：内置 DeepSeek 官方与 ChatGPT 两个服务商预设，也支持添加任意 OpenAI Chat Completions 兼容服务商。API Key 只保存在本机应用私有目录。
