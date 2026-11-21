@@ -25,3 +25,7 @@ keystore/
 out/
 device-data.json
 device-*.png
+# Local Android toolchain state (AVD images, temp)
+.android-avd/
+.android/
+.tmp/
