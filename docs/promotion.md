@@ -46,8 +46,12 @@
 | `Smath-promo-1080p.mp4` | 1920×1080 / 30fps / 53.00s / H.264 CRF18 + AAC 326k / 4,132,643 B | 官网页头、GitHub Release、B 站 / YouTube | `deb09d10…aa55ef1d` |
 | `Smath-promo-vertical-30s.mp4` | 1080×1920 / 30fps / 30.00s / 同上（AAC 323k）/ 2,920,583 B | 抖音 / 小红书 / 视频号 | `55f371c3…5eba2c65f9` |
 | `Smath-social-1080.png` | 1080×1080 PNG / 35,889 B | GitHub Social Preview、公众号头图 | `73de90aa…f57e209` |
+| `Smath-cover-16x9.png` | 1920×1080 PNG / 418,531 B | B 站 / YouTube 视频封面（横屏） | `340110ab…935da24d4` |
+| `Smath-cover-4x3.png` | 1440×1080 PNG / 342,691 B | 4:3 展示位（公众号、知乎、视频号横版） | `95f0e2dc…c58518d9` |
 
 完整校验和：`dist/SHA256SUMS-promo.txt`。
+
+**封面**（`tools/promo/make_covers.py`）：底图为 `05-drawing.mp4` 在 6.0 s 处的实机帧，裁掉状态栏与手势条后贴进圆角手机卡；左侧标题 112px（16:9）/ 94px（4:3），下方是深色玻璃公式卡（`(1+x+x²+…+x¹⁰)²` 一行写完，字号自缩保证永不截断）。缩略图缩到 320px 宽时标题仍清晰，副标题与胶囊退为纹理层——封面只负责「一眼看懂 + 想看下去」，细节留给视频本身。
 
 **配乐**（`tools/promo/add_music.py`）：音源为 `神椿市協奏中。 - ゆりかご (Instrumental).flac`（192 kHz / 24 bit 母带）。原则是只做「按小节裁切 + 淡入淡出 + 静态增益」，不叠加均衡、压缩或降噪。
 
@@ -65,6 +69,7 @@ $py='C:\Users\33558\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\py
 & $py tools\promo\make_promo.py            # 横屏主片
 & $py tools\promo\make_promo_vertical.py   # 竖屏短片
 & $py tools\promo\make_social.py           # 社交方图
+& $py tools\promo\make_covers.py           # 16:9 / 4:3 视频封面
 & $py tools\promo\add_music.py             # 配乐（必须最后跑，否则会被重新生成的无声音轨覆盖）
 ```
 
