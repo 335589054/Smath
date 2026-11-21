@@ -43,11 +43,20 @@
 
 | 文件 | 规格 | 用途 | SHA256（前 8 / 后 9 位） |
 | --- | --- | --- | --- |
-| `Smath-promo-1080p.mp4` | 1920×1080 / 30fps / 53.00s / H.264 CRF18 / 1,984,654 B | 官网页头、GitHub Release、B 站 / YouTube | `a03d71a9…fea9333ab` |
-| `Smath-promo-vertical-30s.mp4` | 1080×1920 / 30fps / 30.00s / 同上 / 1,714,579 B | 抖音 / 小红书 / 视频号 | `ad004b1c…5303429` |
+| `Smath-promo-1080p.mp4` | 1920×1080 / 30fps / 53.00s / H.264 CRF18 + AAC 326k / 4,132,643 B | 官网页头、GitHub Release、B 站 / YouTube | `deb09d10…aa55ef1d` |
+| `Smath-promo-vertical-30s.mp4` | 1080×1920 / 30fps / 30.00s / 同上（AAC 323k）/ 2,920,583 B | 抖音 / 小红书 / 视频号 | `55f371c3…5eba2c65f9` |
 | `Smath-social-1080.png` | 1080×1080 PNG / 35,889 B | GitHub Social Preview、公众号头图 | `73de90aa…f57e209` |
 
-完整校验和：`dist/SHA256SUMS-promo.txt`。两条视频都**没有音乐、没有 TTS**，音轨是一条静音 AAC 48k，剪辑软件里直接叠 BGM 即可（20s / 30s / 39s 三个 Wow 点与分镜一致）。
+完整校验和：`dist/SHA256SUMS-promo.txt`。
+
+**配乐**（`tools/promo/add_music.py`）：音源为 `神椿市協奏中。 - ゆりかご (Instrumental).flac`（192 kHz / 24 bit 母带）。原则是只做「按小节裁切 + 淡入淡出 + 静态增益」，不叠加均衡、压缩或降噪。
+
+| 成片 | 取用区间 | 增益 | 淡入 / 淡出 | 实测响度 |
+| --- | --- | --- | --- | --- |
+| 横屏 53s | 24.117–77.117 s（副歌在 16s 进入，34s 段落停顿，52s 段落收束） | +4.8 dB | 0.5 s / 2.4 s | −14.0 LUFS / 真峰值 −1.2 dBTP |
+| 竖屏 30s | 91.980–121.980 s（开场即段落强起，高潮覆盖落版） | +4.2 dB | 0.12 s / 2.0 s | −14.0 LUFS / 真峰值 −1.6 dBTP |
+
+裁切点对齐 120 BPM 的小节线（beat ≈ 0.5013 s、bar ≈ 2.0052 s、首拍偏移 ≈ 0.055 s），结尾落在段落收束处而非半句中间；增益按实测 LUFS 反推，−1.2 dBFS 的峰值余量刚好让 53s 那条**完全不需要限制器介入**。视频流全程 `-c:v copy`，重新封装不重编码，画面零损失（脚本会打印 `video_stream_unchanged: true` 自证）。音轨为 AAC-LC 320 kbps / 48 kHz 立体声。
 
 ## 五、重建与校验
 
@@ -56,6 +65,7 @@ $py='C:\Users\33558\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\py
 & $py tools\promo\make_promo.py            # 横屏主片
 & $py tools\promo\make_promo_vertical.py   # 竖屏短片
 & $py tools\promo\make_social.py           # 社交方图
+& $py tools\promo\add_music.py             # 配乐（必须最后跑，否则会被重新生成的无声音轨覆盖）
 ```
 
 - ffmpeg 取自 `tools/ffdl/extract/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v9.0.2.exe`（由 PyPI 镜像的 `imageio-ffmpeg` wheel 解包得到，本机原本没有 ffmpeg）。
@@ -66,4 +76,5 @@ $py='C:\Users\33558\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\py
 
 - 绘图镜只呈现**平移**：录屏期间 adb 无法注入多点触控，故文案写作「随手拖动」，不承诺演示缩放。
 - 痛点镜公式刻意右缘渐隐，暗示「答案被切断」；左缘保留 `f(x)=` 完整，避免像录坏的画面。
-- 尚未做：真人 / TTS 旁白、BGM、烧字幕导出 SRT、第 3 镜「已深度思考」的强调动画。
+- 配乐版权：`ゆりかご (Instrumental)` 是商业曲目，仅确定用于本地成片；若要公开发布，需自行确认授权或替换为可商用音源（换曲只改 `add_music.py` 顶部的 `TRACK` 与 `JOBS` 区间后重跑）。
+- 尚未做：真人 / TTS 旁白、烧字幕导出 SRT、第 3 镜「已深度思考」的强调动画。
