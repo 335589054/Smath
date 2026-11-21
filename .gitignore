@@ -25,7 +25,18 @@ keystore/
 out/
 device-data.json
 device-*.png
+
 # Local Android toolchain state (AVD images, temp)
 .android-avd/
 .android/
 .tmp/
+
+# Promo video deliverables (large binaries, distributed outside the repo)
+dist/*.mp4
+dist/*.png
+dist/SHA256SUMS-promo.txt
+
+# Downloaded third-party binaries and Python caches
+tools/ffdl/
+__pycache__/
+*.pyc
