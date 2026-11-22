@@ -328,11 +328,27 @@ fun ChatScreen(
 
     LaunchedEffect(active?.id) {
         stickToBottom = true
-        delay(80)
+        userScrolling = false
+        delay(60)
         if (active == null) {
             listState.scrollToItem(0)
         } else {
-            pinToBottom()
+            // Markdown / KaTeX 的 WebView 高度是异步长出来的：只对齐一次会停在半途，
+            // 所以打开会话后的一小段时间内反复贴底，等高度稳定。
+            repeat(10) {
+                pinToBottom()
+                withFrameNanos { }
+                delay(90)
+            }
+        }
+    }
+    // 一轮回答结束后高度还会再长一次，补几次贴底。
+    LaunchedEffect(streaming == null, active?.id) {
+        if (streaming == null && stickToBottom) {
+            repeat(6) {
+                pinToBottom()
+                delay(80)
+            }
         }
     }
     // 只把「用户的手指拖动」当作接管信号，程序滚动不会误判。
