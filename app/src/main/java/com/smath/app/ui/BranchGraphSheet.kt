@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -344,49 +345,77 @@ fun BranchGraphSheet(
                     // 若用 pointerInput(Unit)，里面捕获的 nodes 会永远停在首次组合时的那份（x/y 可能还是 null），
                     // 表现为「点不中、拖不动」。
                     .pointerInput(nodes, panLimitPx) {
-                        // 画布级统一处理：命中节点就拖节点（绝对跟踪，完全跟手），否则平移；双指缩放。
+                        // 画布级统一处理：命中节点就拖节点（绝对跟踪），空白处平移，双指以两指中点为中心缩放。
+                        // 关键点：双指结束后必须把「单指起点」重设到剩下那根手指的当前位置，
+                        // 否则单指分支会用第一根手指按下时的坐标算位移，画面会瞬间飞走。
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            var last = down.position
-                            val startPos = down.position
-                            val startPan = pan
-                            val startZoom = zoom
+                            // 单指基准：起点坐标 + 当时的 pan，双指结束后会重置
+                            var origin = down.position
+                            var originPan = pan
                             var nodeId = nodeAt(down.position)
                             var moved = false
                             var up = false
+                            var pinching = false
                             while (true) {
                                 val event = awaitPointerEvent()
-                                if (event.changes.size > 1) {
-                                    // calculateZoom/calculatePan 给的是「相对上一次事件」的增量，
-                                    // 必须累加；用 startZoom 相乘会让每一帧都回到起点附近，表现为回弹。
-                                    zoom = (zoom * event.calculateZoom()).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.size > 1) {
+                                    // 以两指中点为中心缩放：内容屏幕坐标 = (content + pan) * zoom，
+                                    // 要让中点下的内容点固定，pan' = pan + centroid * (1/zoom' - 1/zoom)。
+                                    val centroid = event.calculateCentroid(useCurrent = true)
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+                                    val oldZoom = zoom
+                                    val newZoom = (zoom * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                    val factor = 1f / newZoom - 1f / oldZoom
+                                    zoom = newZoom
                                     pan = Offset(
-                                        (pan.x + event.calculatePan().x).coerceIn(-panLimitPx, panLimitPx),
-                                        (pan.y + event.calculatePan().y).coerceIn(-panLimitPx, panLimitPx)
+                                        (pan.x + centroid.x * factor + panChange.x)
+                                            .coerceIn(-panLimitPx, panLimitPx),
+                                        (pan.y + centroid.y * factor + panChange.y)
+                                            .coerceIn(-panLimitPx, panLimitPx)
                                     )
-                                    event.changes.forEach { it.consume() }
+                                    // 双指期间不拖节点，清掉临时位移，避免节点跟着缩放乱跑
+                                    dragPx.clear()
+                                    draggingNodeId = null
+                                    nodeId = null
+                                    pinching = true
                                     moved = true
+                                    event.changes.forEach { it.consume() }
                                     continue
                                 }
-                                val change = event.changes.first()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull()
+                                if (change == null) {
+                                    up = true
+                                    break
+                                }
                                 if (change.changedToUp()) {
                                     change.consume()
                                     up = true
                                     break
                                 }
-                                val delta = change.position - last
-                                last = change.position
-                                if (delta != Offset.Zero) moved = true
+                                if (pinching) {
+                                    // 松掉一根手指：用剩下的这根手指的当前位置重设基准，后续单指操作不会跳
+                                    pinching = false
+                                    origin = change.position
+                                    originPan = pan
+                                    nodeId = nodeAt(change.position)
+                                    continue
+                                }
+                                if (change.position != origin) moved = true
                                 if (nodeId != null) {
                                     change.consume()
-                                    // 绝对跟踪：节点位移 = 手指相对按下点的位移，不做增量累加，避免丢 slop 造成「不跟手」
                                     draggingNodeId = nodeId
-                                    dragPx[nodeId!!] = (change.position - startPos) / zoom
-                                } else if ((change.position - startPos).getDistance() > viewConfiguration.touchSlop) {
+                                    dragPx[nodeId!!] = (change.position - origin) / zoom
+                                } else if ((change.position - origin).getDistance() > viewConfiguration.touchSlop) {
                                     change.consume()
                                     pan = Offset(
-                                        (startPan.x + (change.position.x - startPos.x)).coerceIn(-panLimitPx, panLimitPx),
-                                        (startPan.y + (change.position.y - startPos.y)).coerceIn(-panLimitPx, panLimitPx)
+                                        (originPan.x + (change.position.x - origin.x))
+                                            .coerceIn(-panLimitPx, panLimitPx),
+                                        (originPan.y + (change.position.y - origin.y))
+                                            .coerceIn(-panLimitPx, panLimitPx)
                                     )
                                 }
                             }
