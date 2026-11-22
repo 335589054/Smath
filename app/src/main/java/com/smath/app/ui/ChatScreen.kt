@@ -606,7 +606,9 @@ fun ChatScreen(
             contexts = draftContexts,
             onRemoveContext = { ref -> draftContexts = draftContexts.filterNot { it.id == ref.id } },
             onAddContext = { showContextSheet = true },
-            branchMode = active?.complexBranching == true,
+            // 只有「分支会话且已经有节点」时，左下角才换成拓扑图标；
+            // 刚打开开关、还没问第一个问题时仍然是 @，否则点了也没有图可看。
+            branchMode = active?.let { it.complexBranching && it.nodes.isNotEmpty() } == true,
             pendingBranchCount = active?.pendingParentIds?.size ?: 0,
             onOpenGraph = { showBranchGraph = true },
             webSearch = settings.webSearchByDefault,
