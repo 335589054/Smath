@@ -1258,10 +1258,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun moveBranchNode(nodeId: String, x: Float, y: Float) {
+        moveBranchNodes(mapOf(nodeId to (x to y)))
+    }
+
+    /** 一次性写回多个节点的位置（拖动一个节点时它的下游子树会一起移动）。 */
+    fun moveBranchNodes(moves: Map<String, Pair<Float, Float>>) {
+        if (moves.isEmpty()) return
         val conv = activeConversation.value ?: return
         updateConversation(conv.id) { current ->
-            current.copy(nodes = current.nodes.map { if (it.id == nodeId) it.copy(x = x, y = y) else it })
+            current.copy(
+                nodes = current.nodes.map { node ->
+                    val move = moves[node.id] ?: return@map node
+                    node.copy(x = move.first, y = move.second)
+                }
+            )
         }
+    }
+
+    /** 一键整理画布：丢掉手工位置，按层级重新排布，让分支不重叠。 */
+    fun tidyBranchLayout() {
+        val conv = activeConversation.value ?: return
+        if (conv.nodes.isEmpty()) return
+        val cleared = conv.nodes.map { it.copy(x = null, y = null) }
+        updateConversation(conv.id) { it.copy(nodes = layoutNodes(cleared)) }
+        _events.tryEmit("画布已整理")
     }
 
     /** 该节点及其全部下游节点 id（删除前用于提示会一起删掉多少）。 */

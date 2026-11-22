@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CallMerge
 import androidx.compose.material.icons.rounded.CallSplit
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -112,7 +113,8 @@ fun BranchGraphSheet(
     onCreateBranch: (List<String>) -> Unit,
     onDeleteNode: (String) -> Unit,
     onMoveNode: (String, Float, Float) -> Unit,
-    onJumpToNode: (String) -> Unit
+    onJumpToNode: (String) -> Unit,
+    onTidy: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val density = LocalDensity.current.density
@@ -146,6 +148,29 @@ fun BranchGraphSheet(
     /** 正在被拖动的节点，用于提高绘制层级。 */
     var draggingNodeId by remember { mutableStateOf<String?>(null) }
 
+    /** 正在拖动的整组节点（自己 + 全部下游）：一起移动，树形结构才不会断。 */
+    var dragGroup by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun downstreamOf(rootId: String): List<String> {
+        val children = HashMap<String, MutableList<String>>()
+        nodes.forEach { item ->
+            item.parentIds.forEach { parent ->
+                children.getOrPut(parent) { mutableListOf() }.add(item.id)
+            }
+        }
+        val found = ArrayList<String>()
+        val queue = ArrayDeque<String>()
+        val seen = HashSet<String>()
+        queue.addLast(rootId)
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (!seen.add(id)) continue
+            found.add(id)
+            children[id]?.forEach { queue.addLast(it) }
+        }
+        return found
+    }
+
     /** 多选集合。 */
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -172,6 +197,9 @@ fun BranchGraphSheet(
         }
         seen.filter { byId.containsKey(it) }.toSet()
     }
+
+    /** 一键整理后自动适配视野。 */
+    var pendingFit by remember { mutableStateOf(false) }
 
     /** 把内容包围盒居中到可视区（同时把平移量重置为居中所需的量）。 */
     fun fitContent() {
@@ -221,6 +249,14 @@ fun BranchGraphSheet(
         if (!didInitialFit && nodes.isNotEmpty() && viewport != IntSize.Zero) {
             fitContent()
             didInitialFit = true
+        }
+    }
+
+    // 一键整理后重新居中（节点位置由 ViewModel 重排，等一帧再算包围盒）。
+    LaunchedEffect(nodes) {
+        if (pendingFit) {
+            pendingFit = false
+            fitContent()
         }
     }
 
@@ -365,25 +401,36 @@ fun BranchGraphSheet(
                         onTap = {
                             selected = if (node.id in selected) selected - node.id else selected + node.id
                         },
+                        onShowDetail = { detailNodeId = node.id },
                         onDragStart = {
+                            dragGroup = downstreamOf(node.id)
                             draggingNodeId = node.id
-                            dragPx[node.id] = Offset.Zero
+                            dragGroup.forEach { dragPx[it] = Offset.Zero }
                         },
                         onDrag = { delta ->
-                            dragPx[node.id] = (dragPx[node.id] ?: Offset.Zero) + delta
+                            dragGroup.forEach { id ->
+                                dragPx[id] = (dragPx[id] ?: Offset.Zero) + delta
+                            }
                         },
                         onDragEnd = {
-                            val total = dragPx[node.id] ?: Offset.Zero
-                            dragPx.remove(node.id)
+                            var movedAny = false
+                            dragGroup.forEach { id ->
+                                val item = nodes.firstOrNull { it.id == id } ?: return@forEach
+                                val total = dragPx[id] ?: Offset.Zero
+                                if (total.getDistance() / density > DRAG_THRESHOLD_DP) {
+                                    movedAny = true
+                                    onMoveNode(
+                                        id,
+                                        (item.x ?: 0f) + total.x / density,
+                                        (item.y ?: 0f) + total.y / density
+                                    )
+                                }
+                            }
+                            dragPx.clear()
                             draggingNodeId = null
-                            if (total.getDistance() / density > DRAG_THRESHOLD_DP) {
-                                onMoveNode(
-                                    node.id,
-                                    (node.x ?: 0f) + total.x / density,
-                                    (node.y ?: 0f) + total.y / density
-                                )
-                            } else {
-                                // 长按后没有移动 = 查看详情
+                            dragGroup = emptyList()
+                            if (!movedAny) {
+                                // 拖动力度不足 = 查看详情
                                 detailNodeId = node.id
                             }
                         },
@@ -417,6 +464,28 @@ fun BranchGraphSheet(
                     Icon(
                         imageVector = Icons.Rounded.CenterFocusStrong,
                         contentDescription = "适配画布",
+                        modifier = Modifier.size(17.dp),
+                        tint = onSurfaceVariantColor
+                    )
+                }
+
+                // 一键整理：清空手动位置，按树形重新分层排布，再自动适配视野
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 44.dp, top = 8.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(surfaceColor.copy(alpha = 0.94f))
+                        .clickable {
+                            pendingFit = true
+                            onTidy()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoFixHigh,
+                        contentDescription = "一键整理画布",
                         modifier = Modifier.size(17.dp),
                         tint = onSurfaceVariantColor
                     )
@@ -505,6 +574,7 @@ private fun BranchNodeCard(
     modifier: Modifier = Modifier,
     onMeasured: (Int) -> Unit,
     onTap: () -> Unit,
+    onShowDetail: () -> Unit,
     onDragStart: () -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
@@ -533,13 +603,17 @@ private fun BranchNodeCard(
             .shadow(3.dp, shape, clip = false)
             .onGloballyPositioned { coordinates -> onMeasured(coordinates.size.height) }
             .pointerInput(node.id) {
-                detectTapGestures(onTap = {
-                    val now = System.currentTimeMillis()
-                    if (now - longPressMark[0] > TAP_SUPPRESS_WINDOW_MS) onTap()
-                })
+                detectTapGestures(
+                    onTap = {
+                        val now = System.currentTimeMillis()
+                        if (now - longPressMark[0] > TAP_SUPPRESS_WINDOW_MS) onTap()
+                    },
+                    onLongPress = { onShowDetail() }
+                )
             }
             .pointerInput(node.id) {
-                detectDragGesturesAfterLongPress(
+                // 直接拖动：手指移动超过系统 touch slop 即开始搬位置，无需长按。
+                detectDragGestures(
                     onDragStart = {
                         longPressMark[0] = System.currentTimeMillis()
                         onDragStart()

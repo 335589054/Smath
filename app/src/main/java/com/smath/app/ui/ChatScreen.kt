@@ -651,12 +651,13 @@ fun ChatScreen(
                 onDismiss = { showBranchGraph = false },
                 onCreateBranch = { ids -> viewModel.createBranchFromNodes(ids) },
                 onDeleteNode = { id -> deleteNodeId = id },
-                onMoveNode = { id, x, y -> viewModel.moveBranchNode(id, x, y) },
+                onMoveNode = { id, x, y -> viewModel.moveBranchNodes(mapOf(id to (x to y))) },
                 onJumpToNode = { id ->
                     viewModel.jumpToBranchNode(id)
                     showBranchGraph = false
                     stickToBottom = true
-                }
+                },
+                onTidy = { viewModel.tidyBranchLayout() }
             )
         }
     }
