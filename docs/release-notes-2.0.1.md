@@ -46,3 +46,15 @@
 ```
 35DCD7F10AFA8C0049650EF5E57C928525A8D2471A5CC290751D88125FA13065  Smath-2.0.1-release.apk
 ```
+## 安装
+
+- APK：`Smath-2.0.1-release.apk`（versionCode 16，release 签名，minSdk 26 / target 35）。
+- 与 2.0.0 同签名，可直接覆盖安装，本地会话与设置保留。
+- 校验：`SHA-256  17136E745548B9A433467513C00D3A59265DFD9603071C1A2B22B4743BB114FE`
+
+## 宣传片
+
+这次另外附上 2.0 的程序化宣传片（不含任何真机截图，全部由脚本逐帧绘制）：
+`Smath-promo2-1080p.mp4`（1920×1080 / 30fps / 48.12s，复用同一首 BGM）。
+制作脚本见 `tools/promo/make_promo2.py` 与 `tools/promo/add_music2.py`，
+分镜与重建方式见 `docs/promo-2.0.md`。
