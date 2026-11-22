@@ -22,6 +22,7 @@ import android.os.IBinder
 import android.util.DisplayMetrics
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.smath.app.MainActivity
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -42,6 +43,9 @@ class ScreenCaptureService : Service() {
     private var handler: Handler? = null
     private val pendingCapture = AtomicBoolean(false)
 
+    /** 这次截图完成后要不要直接把 Smath 拉起来并跳到裁剪页（悬浮球直接截图走这条路）。 */
+    private var pendingLaunchApp = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -52,7 +56,10 @@ class ScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_ARM -> arm(intent, startId)
-            ACTION_CAPTURE -> captureFrame()
+            ACTION_CAPTURE -> {
+                pendingLaunchApp = intent.getBooleanExtra(EXTRA_LAUNCH_APP, false)
+                captureFrame()
+            }
             ACTION_DISARM -> {
                 releaseProjection()
                 stopSelf()
@@ -120,7 +127,13 @@ class ScreenCaptureService : Service() {
                 val path = saveImage(image)
                 if (path != null) {
                     broadcast(ACTION_CAPTURED).putExtra(EXTRA_SCREENSHOT_PATH, path)
+                    if (pendingLaunchApp) {
+                        pendingLaunchApp = false
+                        // 悬浮球直接截图时没有 Activity 在等这个结果，服务自己把应用叫起来。
+                        launchAppWithCrop(path)
+                    }
                 } else {
+                    pendingLaunchApp = false
                     broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "截图保存失败")
                 }
             } finally {
@@ -146,6 +159,7 @@ class ScreenCaptureService : Service() {
     private fun captureFrame() {
         if (projection == null) {
             armed = false
+            toastMessage("截屏还没有就绪，请到设置里重新打开「截屏悬浮按钮」")
             broadcast(ACTION_CAPTURE_ERROR)
                 .putExtra(EXTRA_ERROR, "截屏还没有就绪，请到设置里重新打开「截屏悬浮按钮」")
             return
@@ -154,9 +168,20 @@ class ScreenCaptureService : Service() {
         // 悬浮球刚被隐藏，屏幕会重绘并送来新帧；2.5 秒还没帧就放弃这一次。
         handler?.postDelayed({
             if (pendingCapture.compareAndSet(true, false)) {
+                pendingLaunchApp = false
+                toastMessage("截图超时，请再点一次")
                 broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "截图超时，请再点一次")
             }
         }, 2500)
+    }
+
+    /** 后台服务里失败时给个明确反馈，避免点了悬浮球什么都没发生。 */
+    private fun toastMessage(text: String) {
+        runCatching {
+            Handler(mainLooper).post {
+                runCatching { android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_SHORT).show() }
+            }
+        }
     }
 
     private fun saveImage(image: android.media.Image): String? {
@@ -205,6 +230,20 @@ class ScreenCaptureService : Service() {
         val intent = Intent(action).setPackage(packageName)
         sendBroadcast(intent)
         return intent
+    }
+
+    /** 截完图直接把 Smath 拉起来，并带上截图路径让主界面进入裁剪页。 */
+    private fun launchAppWithCrop(path: String) {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+            putExtra(MainActivity.EXTRA_CROP_PATH, path)
+        }
+        runCatching { startActivity(intent) }
+            .onFailure { broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "截图已保存，但打不开主界面") }
     }
 
     private fun announceArmed() {
@@ -288,6 +327,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_SCREENSHOT_PATH = "screenshot_path"
         const val EXTRA_ERROR = "error"
+        const val EXTRA_LAUNCH_APP = "launch_app"
         private const val CHANNEL_ID = "smath_capture"
         private const val NOTIFICATION_ID = 4102
 
@@ -308,6 +348,15 @@ class ScreenCaptureService : Service() {
         fun capture(context: Context) {
             val intent = Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_CAPTURE
+            }
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+        }
+
+        /** 悬浮球用这个：抓完一帧后服务自己把应用叫起来进裁剪页。 */
+        fun captureAndOpen(context: Context) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_CAPTURE
+                putExtra(EXTRA_LAUNCH_APP, true)
             }
             runCatching { ContextCompat.startForegroundService(context, intent) }
         }

@@ -159,7 +159,9 @@ class ScreenshotOverlayService : Service() {
         // 常驻的 MediaProjection 才会送来新的一帧。
         hideBubbleTemporarily()
         if (ScreenCaptureService.armed) {
-            ScreenCaptureService.capture(this)
+            // 已经在录屏会话里：服务自己抓一帧，再把应用拉起来进裁剪页。
+            ScreenCaptureService.captureAndOpen(this)
+            // 服务那边万一 2.5 秒都没拿到帧，会把错误显示在通知里，不会静默失败。
         } else {
             val intent = Intent(this, ScreenCaptureActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
