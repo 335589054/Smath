@@ -204,11 +204,11 @@ WORDMARK = wordmark()
 
 
 def caption_block(head, sub=None):
-    lines = [(head, F_CAPTION, (255, 255, 255, 240), 14)]
+    lines = [(head, F_CAPTION, (255, 255, 255, 240), 16)]
     if sub:
         lines.append((sub, font(F_REG, 34), MUTED + (235,), 0))
-    return rounded_card(lines, 900, pad_x=34, pad_y=24, radius=18, fill=(255, 255, 255, 14),
-                        border=(255, 255, 255, 30), border_w=1)
+    return rounded_card(lines, 960, pad_x=36, pad_y=34, radius=20, fill=(255, 255, 255, 16),
+                        border=(255, 255, 255, 34), border_w=1)
 
 
 NODE_DEFS = [
@@ -259,29 +259,33 @@ def tidy_positions():
 def scene_pain(img, t, local):
     """0 - 8.02s：线性对话的窒息感。"""
     d = ImageDraw.Draw(img)
-    # 一条竖线，节点被压成一列，多个分支试图长出来又被折断
-    x = W / 2 - NODE_W / 2
-    seq = ["问：这道题怎么下笔？", "答：先看条件……", "问：换个思路呢？", "答：只能重开一段"]
+    stem_x = 1090
+    seq = ["问：这道题怎么下笔？", "答：先看条件……", "问：换个思路呢？"]
+    d.line([(stem_x, 130), (stem_x, 720)], fill=(110, 122, 165, 110), width=3)
     for i, text in enumerate(seq):
-        y = 240 + i * 150 - local * 26
-        appear = ease_out((local - i * 0.55) / 0.6)
+        y = 168 + i * 158 - local * 10
+        appear = ease_out((local - i * 0.5) / 0.6)
         if appear <= 0:
             continue
-        card = rounded_card([(text, font(F_REG, 28), (150, 160, 190), 0)], 620, pad_x=24, pad_y=18,
-                            radius=16, fill=(255, 255, 255, 12), border=(255, 255, 255, 26), border_w=1)
-        paste_alpha(img, card, (x - 100, y - 60), alpha=appear * 0.95)
-    # 试图分叉的小枝桠，被拉回主线
-    stem_x = W / 2
-    for k in range(3):
-        yy = 470 + k * 150
-        grow = clamp((local - 1.2 - k * 0.7) / 0.8)
+        card = rounded_card([(text, font(F_REG, 28), (156, 166, 196), 0)], 600, pad_x=26, pad_y=20,
+                            radius=16, fill=(255, 255, 255, 14), border=(255, 255, 255, 30), border_w=1)
+        paste_alpha(img, card, (stem_x - 640, y), alpha=appear * 0.95)
+        d.line([(stem_x - 40, y + 38), (stem_x - 12, y + 38)], fill=(120, 132, 172, 120), width=2)
+        d.ellipse([stem_x - 8, y + 32, stem_x + 4, y + 44], fill=(130, 142, 185, 190))
+    # 试图分叉的小枝桠：长出去，再被拉回主线
+    for k in range(2):
+        yy = 620 + k * 70
+        grow = clamp((local - 1.1 - k * 0.7) / 0.9)
         if grow <= 0:
             continue
-        pull = ease_in_out(clamp((local - 3.2 - k * 0.6) / 0.9))
-        off = (1 - pull) * 190 * math.sin(math.pi * grow)
-        d.line([(stem_x, yy), (stem_x + off, yy - 40 * grow)], fill=(120, 130, 170, 120), width=3)
+        pull = ease_in_out(clamp((local - 3.6 - k * 0.6) / 1.0))
+        reach = 200 * math.sin(math.pi * min(1.0, grow)) * (1 - pull)
+        tip = (stem_x + reach + 8, yy - 26 * (1 - pull))
+        if reach > 10:
+            d.line([(stem_x, yy), tip], fill=(126, 138, 178, 150), width=3)
+            d.ellipse([tip[0] - 5, tip[1] - 5, tip[0] + 5, tip[1] + 5], fill=(126, 138, 178, 170))
     cap = caption_block("对话，只能一条线往前走", "想问个「如果换个思路呢」，只能重开一段")
-    paste_alpha(img, cap, (120, 880), alpha=ease_out(local / 0.8))
+    paste_alpha(img, cap, (150, 760), alpha=ease_out(local / 0.8))
 
 
 def scene_title(img, t, local):
@@ -386,7 +390,7 @@ def scene_graph(img, t, local):
     if 12.1 <= t < 18.2:
         a = ease_out((t - 12.1) / 0.6) * (1 - ease_out(clamp((t - 17.5) / 0.6)))
         cap = caption_block("每条思路都留得下来", "一次问答长成一个节点，枝杈自己看得见")
-        paste_alpha(img, cap, (150, 890), alpha=a)
+        paste_alpha(img, cap, (150, 800), alpha=a)
     # 选中计数提示
     if 18.1 <= t < 19.9:
         a = ease_out((t - 18.1) / 0.4) * (1 - ease_out(clamp((t - 19.5) / 0.3)))
