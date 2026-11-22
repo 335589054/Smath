@@ -382,6 +382,9 @@ fun ChatScreen(
             )
         }.collect {
             if (!stickToBottom || userScrolling) return@collect
+            // “自动滚动”关闭时，只在用户自己发消息（不在流式输出中）才贴底，
+            // 输出过程中页面保持不动，除非用户手动滑到底或点「到底部」。
+            if (!settings.autoFollowStreaming && streaming != null) return@collect
             withFrameNanos { }
             pinToBottom()
         }
@@ -665,7 +668,8 @@ fun ChatScreen(
             } else {
                 null
             },
-            drawingEnabled = settings.drawingAgentEnabled
+            drawingEnabled = settings.drawingAgentEnabled,
+            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled
         )
     }
 

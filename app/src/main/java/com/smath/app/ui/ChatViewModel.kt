@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.smath.app.agent.ToolRunner
 import com.smath.app.api.ApiCallException
 import com.smath.app.api.ApiErrorCatalog
 import com.smath.app.api.ChatApi
@@ -269,7 +270,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     preset = preset,
                     globalPrompt = _data.value.settings.globalPrompt,
                     drawingEnabled = _data.value.settings.drawingAgentEnabled,
-                    calculatorEnabled = _data.value.settings.calculatorAgentEnabled
+                    calculatorEnabled = _data.value.settings.calculatorAgentEnabled,
+                    linearAlgebraEnabled = _data.value.settings.linearAlgebraAgentEnabled
                 ),
                 presetId = preset.id,
                 presetName = preset.name,
@@ -398,55 +400,90 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 var finishReason: String? = null
                 var continuation = 0
+                // 多步调用：工具往返用的额外消息（上一轮的部分回答 + 工具执行结果）。
+                val toolHistory = mutableListOf<ChatMessage>()
+                var toolRounds = 0
+                var toolCalls = 0
+                var executedUpTo = 0
                 while (true) {
-                    val requestHistory = if (continuation == 0) {
-                        history
-                    } else {
-                        history + listOf(
-                            ChatMessage(
-                                id = "$messageId-continued-$continuation",
-                                role = "assistant",
-                                content = content.toString()
-                            ),
-                            ChatMessage(
-                                id = "$messageId-continue-request-$continuation",
-                                role = "user",
-                                content = "你上一条回答在句子中间被输出长度上限截断了。请紧接截断处继续写，不要重复已经输出的内容，也不要重新开头或总结。"
+                    continuation = 0
+                    // 内层循环处理“输出被长度上限截断后自动续写”。
+                    while (true) {
+                        val requestHistory = if (continuation == 0) {
+                            history + toolHistory
+                        } else {
+                            history + toolHistory + listOf(
+                                ChatMessage(
+                                    id = "$messageId-continued-$continuation",
+                                    role = "assistant",
+                                    content = content.toString()
+                                ),
+                                ChatMessage(
+                                    id = "$messageId-continue-request-$continuation",
+                                    role = "user",
+                                    content = "你上一条回答在句子中间被输出长度上限截断了。请紧接截断处继续写，不要重复已经输出的内容，也不要重新开头或总结。"
+                                )
                             )
+                        }
+                        finishReason = null
+                        api.streamChat(
+                            provider = provider,
+                            model = model,
+                            systemPrompt = system,
+                            messages = requestHistory,
+                            thinkingLevel = settings.thinking,
+                            onReasoning = { chunk ->
+                                if (token == generationToken) {
+                                    reasoning.append(chunk)
+                                    publish()
+                                }
+                            },
+                            onContent = { chunk ->
+                                if (token == generationToken) {
+                                    if (firstContentAt == 0L) firstContentAt = SystemClock.elapsedRealtime()
+                                    phase = "正在回答"
+                                    content.append(chunk)
+                                    publish()
+                                }
+                            },
+                            onCitations = { list ->
+                                if (token == generationToken) {
+                                    citations = (citations + list).distinctBy { it.url }
+                                    publish(true)
+                                }
+                            },
+                            onFinish = { reason -> finishReason = reason }
                         )
+                        if (finishReason != "length" || content.isBlank() || continuation >= 2) break
+                        continuation += 1
+                        if (!content.endsWith("\n")) content.append("\n")
+                        phase = "正在继续回答"
+                        publish(true)
                     }
-                    finishReason = null
-                    api.streamChat(
-                        provider = provider,
-                        model = model,
-                        systemPrompt = system,
-                        messages = requestHistory,
-                        thinkingLevel = settings.thinking,
-                        onReasoning = { chunk ->
-                            if (token == generationToken) {
-                                reasoning.append(chunk)
-                                publish()
-                            }
-                        },
-                        onContent = { chunk ->
-                            if (token == generationToken) {
-                                if (firstContentAt == 0L) firstContentAt = SystemClock.elapsedRealtime()
-                                phase = "正在回答"
-                                content.append(chunk)
-                                publish()
-                            }
-                        },
-                        onCitations = { list ->
-                            if (token == generationToken) {
-                                citations = (citations + list).distinctBy { it.url }
-                                publish(true)
-                            }
-                        },
-                        onFinish = { reason -> finishReason = reason }
+
+                    // 模型可能在本轮里调用了工具：本地执行后把结果回灌，再请求下一轮。
+                    val scan = ToolRunner.scan(
+                        content = content.toString(),
+                        fromIndex = executedUpTo,
+                        drawingCanvasSize = settings.drawingCanvasSize
                     )
-                    if (finishReason != "length" || content.isBlank() || continuation >= 2) break
-                    continuation += 1
+                    executedUpTo = scan.nextIndex
+                    if (scan.executions.isEmpty() || toolRounds >= ToolRunner.MAX_TOOL_ROUNDS) break
+                    toolRounds += 1
+                    toolCalls += scan.executions.size
+                    phase = if (toolRounds == 1) "正在执行工具" else "正在执行工具（第 $toolRounds 次）"
+                    publish(true)
                     if (!content.endsWith("\n")) content.append("\n")
+                    toolHistory += ChatMessage(
+                        id = "$messageId-tool-call-$toolRounds",
+                        role = "assistant",
+                        content = content.toString()
+                    )
+                    toolHistory += ChatMessage(
+                        id = "$messageId-tool-result-$toolRounds",
+                        role = "user",
+                        content = ToolRunner.resultMessage(scan.executions)
+                    )
                     phase = "正在继续回答"
                     publish(true)
                 }
@@ -459,6 +496,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val notice = buildList {
                     searchNotice?.let(::add)
+                    if (toolCalls > 0) add("已调用工具 $toolCalls 次 · $toolRounds 轮")
                     if (finishReason == "length") {
                         add(if (continuation > 0) "已自动续写 $continuation 次，输出仍达到长度上限" else "输出达到长度上限，内容可能不完整")
                     }
@@ -662,6 +700,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setCalculatorAgentEnabled(enabled: Boolean) {
         updateData { it.copy(settings = it.settings.copy(calculatorAgentEnabled = enabled)) }
+    }
+
+    fun setLinearAlgebraAgentEnabled(enabled: Boolean) {
+        updateData { it.copy(settings = it.settings.copy(linearAlgebraAgentEnabled = enabled)) }
+    }
+
+    fun setAutoFollowStreaming(enabled: Boolean) {
+        updateData { it.copy(settings = it.settings.copy(autoFollowStreaming = enabled)) }
     }
 
     fun setDrawingCanvasSize(size: Int) {

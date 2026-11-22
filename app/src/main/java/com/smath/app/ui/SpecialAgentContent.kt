@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Functions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -62,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import com.smath.app.agent.ComplexNumber
 import com.smath.app.agent.PaintCommand
 import com.smath.app.agent.PaintDocument
+import com.smath.app.agent.LinearAlgebraTool
 import com.smath.app.agent.PaintError
 import com.smath.app.agent.evalMath
 import com.smath.app.agent.formatComplex
@@ -73,7 +75,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 private val specialBlockRegex = Regex(
-    """\[\$\$(paint|calc)_start\$\$\]([\s\S]*?)(?:\[\$\$\1_end\$\$\]|$)"""
+    """\[\$\$(paint|calc|linalg)_start\$\$\]([\s\S]*?)(?:\[\$\$\1_end\$\$\]|$)"""
 )
 
 @Composable
@@ -117,6 +119,12 @@ fun SpecialAgentContent(
                     complete = closed && !streaming,
                     streaming = streaming
                 )
+            } else if (kind == "linalg") {
+                if (!closed) {
+                    PendingBlock("正在做符号计算…")
+                } else {
+                    LinearAlgebraBlock(source = body.trim(), dark = dark)
+                }
             } else {
                 if (!closed) {
                     PendingBlock("正在计算…")
@@ -666,6 +674,79 @@ private fun CalculatorBlock(expression: String) {
                     }
                 }
             )
+        }
+    }
+}
+@Composable
+private fun LinearAlgebraBlock(source: String, dark: Boolean) {
+    val results = remember(source) { LinearAlgebraTool.runBlock(source) }
+    val clipboard = LocalClipboardManager.current
+    val d = "$"
+    val preview = remember(results) {
+        results.joinToString("\n\n") { item ->
+            if (item.error != null) {
+                "`${item.command}`\n\n> ⚠️ ${item.error}"
+            } else {
+                val tex = item.latex?.takeIf { it.isNotBlank() }
+                if (tex != null) {
+                    "`${item.command}`\n\n$d$d$tex$d$d"
+                } else {
+                    "`${item.command}`\n\n$d$d${item.plain}$d$d"
+                }
+            }
+        }
+    }
+    val copyText = remember(results) {
+        results.joinToString("\n") { item ->
+            if (item.error != null) "${item.command} -> error: ${item.error}"
+            else "${item.command} = ${item.plain}"
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.Functions,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "线性代数计算器",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(
+                    onClick = { clipboard.setText(AnnotatedString(copyText)) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.ContentCopy,
+                        contentDescription = "复制结果",
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            HorizontalDivider(
+                modifier = Modifier.padding(top = 5.dp, bottom = 7.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+            )
+            if (results.isEmpty()) {
+                Text(
+                    text = "没有读到有效命令",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                MarkdownView(markdown = preview, dark = dark)
+            }
         }
     }
 }

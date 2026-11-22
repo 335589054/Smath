@@ -34,7 +34,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.Calculate
+import androidx.compose.material.icons.rounded.Functions
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
@@ -92,6 +94,7 @@ import com.smath.app.data.BASE_AGENT_PROMPT
 import com.smath.app.data.ListMode
 import com.smath.app.data.ProviderConfig
 import com.smath.app.data.PresetTransfer
+import com.smath.app.agent.LinearAlgebraTool
 import com.smath.app.data.providerKindColor
 import com.smath.app.screenshot.ScreenshotOverlayService
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +119,7 @@ fun SettingsScreen(
     var showAddProvider by remember { mutableStateOf(false) }
     var presetTransferBusy by remember { mutableStateOf(false) }
     var pendingPresetExport by remember { mutableStateOf<List<AgentPreset>>(emptyList()) }
+    var showLinalgSample by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -509,6 +513,40 @@ fun SettingsScreen(
                                 onCheckedChange = viewModel::setCalculatorAgentEnabled
                             )
                         }
+                        Spacer(Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Functions,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "线性代数计算器 Agent",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "支持行列式、特征多项式、求逆、秩、解方程组、矩阵乘法与符号因式分解，结果以 LaTeX 显示。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.linearAlgebraAgentEnabled,
+                                onCheckedChange = viewModel::setLinearAlgebraAgentEnabled
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { showLinalgSample = true },
+                            shape = CircleShape
+                        ) { Text("查看工具示例效果") }
                     }
                 }
             }
@@ -572,6 +610,41 @@ fun SettingsScreen(
                                 "已开启。蓝色“截”按钮可拖动；截屏时会请求一次系统录屏授权。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+            item { SectionLabel("对话") }
+            item {
+                SettingsCard {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.ArrowDownward,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "自动跟随输出",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "开启后思考与回答持续输出时页面自动贴到底部；关闭后只有你滑到底或点「到底部」，页面才移动。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.autoFollowStreaming,
+                                onCheckedChange = viewModel::setAutoFollowStreaming
                             )
                         }
                     }
@@ -738,8 +811,13 @@ fun SettingsScreen(
             } else {
                 null
             },
-            drawingEnabled = settings.drawingAgentEnabled
+            drawingEnabled = settings.drawingAgentEnabled,
+            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled
         )
+    }
+
+    if (showLinalgSample) {
+        LinalgSampleDialog(dark = dark, onDismiss = { showLinalgSample = false })
     }
 
     if (editingGlobalPrompt) {
@@ -1507,3 +1585,29 @@ private fun providerKindLabel(kind: String): String = when (kind) {
 
 private fun parseModels(text: String): List<String> =
     text.split(',', '\n').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+@Composable
+private fun LinalgSampleDialog(dark: Boolean, onDismiss: () -> Unit) {
+    val sample = remember { LinearAlgebraTool.sample() }
+    val results = remember(sample) { LinearAlgebraTool.runBlock(sample) }
+    val markdown = remember(results) {
+        results.joinToString("\n\n") { item ->
+            if (item.error.isNullOrBlank()) {
+                "`${item.command}`\n\n\$\$${item.latex}\$\$"
+            } else {
+                "`${item.command}`\n\n> ⚠️ ${item.error}"
+            }
+        }
+    }
+    SmathDialog(
+        title = "线性代数工具示例",
+        subtitle = "下面的结果都由本机符号引擎实时算出，不经过模型编造",
+        icon = Icons.Rounded.Functions,
+        onDismiss = onDismiss,
+        footer = {
+            Button(onClick = onDismiss, shape = CircleShape) { Text("知道了") }
+        }
+    ) {
+        MarkdownView(markdown = markdown, dark = dark)
+    }
+}

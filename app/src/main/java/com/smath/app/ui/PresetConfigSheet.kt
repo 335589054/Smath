@@ -53,7 +53,8 @@ fun PresetConfigSheet(
     onReset: () -> Unit,
     isNew: Boolean = false,
     onDelete: (() -> Unit)? = null,
-    drawingEnabled: Boolean = false
+    drawingEnabled: Boolean = false,
+    calcEnabled: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val nameEditable = isNew || !preset.builtIn
@@ -162,9 +163,11 @@ fun PresetConfigSheet(
             ) {
                 preset.availableStyles.forEach { option ->
                     val needsDrawing = option == AnswerStyle.VISUAL_RICH && !drawingEnabled
+                    // “多调用数值检验”要用计算器或线性代数计算器去真的算一遍。
+                    val needsCalc = option == AnswerStyle.MULTI_NUMERIC_CHECK && !calcEnabled
                     FilterChip(
                         selected = styles.contains(option),
-                        enabled = !locked && !needsDrawing,
+                        enabled = !locked && !needsDrawing && !needsCalc,
                         onClick = {
                             styles = if (styles.contains(option)) styles - option else styles + option
                         },
@@ -172,10 +175,14 @@ fun PresetConfigSheet(
                     )
                 }
             }
-            if (!drawingEnabled) {
+            if (!drawingEnabled || !calcEnabled) {
                 Spacer(Modifier.height(6.dp))
+                val hints = buildList {
+                    if (!drawingEnabled) add("「图文并茂」需要先在设置中开启绘图 Agent")
+                    if (!calcEnabled) add("「多调用数值检验」需要先在设置中开启计算器或线性代数计算器 Agent")
+                }
                 Text(
-                    text = "「图文并茂」需要先在设置中开启绘图 Agent。",
+                    text = hints.joinToString("；") + "。",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -54,6 +54,11 @@ enum class AnswerStyle(val label: String, val prompt: String) {
     VISUAL_RICH(
         "图文并茂",
         "在关键处配合图形说明，比如用绘图工具画出函数图像、几何关系或示意图，让读者能同时看到图与文字。"
+    ),
+    MULTI_NUMERIC_CHECK(
+        "多调用数值检验",
+        "关键数值、方程的解、矩阵运算等容易算错的环节，主动调用计算类工具实际算一遍，再以工具返回的结果为准继续推导；" +
+            "最终回答里说明你验证了哪些量，不要把没验证过的结果当成已验证。"
     )
 }
 
@@ -142,7 +147,10 @@ data class AppSettings(
     val thinkingLevel: ThinkingLevel? = ThinkingLevel.MEDIUM,
     val drawingAgentEnabled: Boolean = false,
     val calculatorAgentEnabled: Boolean = false,
-    val drawingCanvasSize: Int = 720
+    val linearAlgebraAgentEnabled: Boolean = false,
+    val drawingCanvasSize: Int = 720,
+    /** 流式输出时是否自动跟随到底部；关闭后除非用户手动滑到底或点「到底部」，页面不会自己动。 */
+    val autoFollowStreaming: Boolean = true
 ) {
     val thinking: ThinkingLevel get() = thinkingLevel ?: ThinkingLevel.MEDIUM
 }
@@ -249,8 +257,10 @@ fun buildSystemPrompt(
     preset: AgentPreset,
     globalPrompt: String = BASE_AGENT_PROMPT,
     drawingEnabled: Boolean = false,
-    calculatorEnabled: Boolean = false
+    calculatorEnabled: Boolean = false,
+    linearAlgebraEnabled: Boolean = false
 ): String {
+    val anyTool = drawingEnabled || calculatorEnabled || linearAlgebraEnabled
     val parts = mutableListOf<String>()
     if (preset.injectBasePrompt && globalPrompt.isNotBlank()) {
         parts += globalPrompt.trim()
@@ -258,16 +268,33 @@ fun buildSystemPrompt(
     parts += REASONING_QUALITY_PROMPT
     if (preset.stage.prompt.isNotBlank()) parts += preset.stage.prompt
     preset.effectiveStyles.forEach { style ->
-        // “图文并茂”依赖绘图工具；未开启绘图 agent 时不注入，避免模型给出无法渲染的指令。
+        // “图文并茂”依赖绘图工具；“多调用数值检验”依赖任意计算类工具。
+        // 对应 agent 未开启时不注入，避免模型给出无法执行的指令。
         if (style == AnswerStyle.VISUAL_RICH && !drawingEnabled) return@forEach
+        if (style == AnswerStyle.MULTI_NUMERIC_CHECK && !(calculatorEnabled || linearAlgebraEnabled)) {
+            return@forEach
+        }
         parts += style.prompt
     }
     if (preset.customInstruction.isNotBlank()) parts += preset.customInstruction.trim()
+    if (anyTool) parts += MULTI_STEP_TOOL_PROTOCOL
     if (drawingEnabled) parts += drawingAgentPrompt()
     if (calculatorEnabled) parts += CALCULATOR_AGENT_PROMPT
+    if (linearAlgebraEnabled) parts += LINEAR_ALGEBRA_AGENT_PROMPT
     parts += "回答时请使用 Markdown 排版；数学公式使用 LaTeX，行内公式用 \$...\$，独立公式用 \$\$...\$\$；代码、表格和列表保持结构清晰。"
     return parts.joinToString("\n\n")
 }
+
+/**
+ * 多步工具调用协议：模型写完工具块后必须主动结束本轮，
+ * 由应用执行工具、把结果作为下一条消息回灌，再发起下一轮请求。
+ */
+const val MULTI_STEP_TOOL_PROTOCOL = """多步工具调用（已启用）：
+1. 需要工具时，先用一句话说明你要算/画什么，然后输出工具块；**输完工具块后立刻结束本轮输出**，不要继续推导，不要写总结、结语或“等待结果”之类的话。应用会执行工具，并把执行结果作为下一条消息发给你。
+2. 收到“工具执行结果”后，直接基于结果继续推理和书写；不要重复已经输出过的内容，也不要把同一段工具命令再贴一次。
+3. 每轮只调用一个工具，一次回答里最多调用 4 次。结果与预期不符时，可以换表达式或换种方法再算一次，但不要为了凑数反复调用。
+4. 没调用工具就不要声称“已计算/已验证/已画图”；也不要编造工具的执行结果，一切以应用返回的结果为准。
+5. 工具报错时，读懂错误原因（通常是语法或取值问题），修正后重试一次；仍然失败就改用其他方法，并在回答里说明。"""
 
 private fun drawingAgentPrompt(): String = """绘图工具（已启用）：
 当问题适合用图形说明时，可以在回答中直接生成一张精确的图。应用会把标记内的命令渲染成可缩放的无限画布，并在画布下方提供命令编辑入口。只在确实有助于理解时绘图，不要为了展示而绘图，也不要在思考过程中使用绘图标记。
@@ -292,7 +319,8 @@ point(0,0);
 - color(r,g,b) 设置颜色并保持到下一次 color；stroke_width(n) 设置线条、函数曲线和点的粗细（n 为正数），保持到下一次 stroke_width。默认颜色为黑色，默认粗细为 2。
 - string("文本",x,y,scale) 在画布坐标 (x,y) 处绘制文本，y 为文本基线位置；scale 为文字缩放倍数，1 为默认大小。文本颜色使用当前 color。
 - 所有命令按顺序执行；某条命令出错时只跳过该行，画布继续显示其他内容，并显示“绘图错误”及位置和原因。
-- 不要在标记内写 Markdown 代码围栏，不要在命令之外重复整段命令。标记之外可以正常解释图像。"""
+- 不要在标记内写 Markdown 代码围栏，不要在命令之外重复整段命令。标记之外可以正常解释图像。
+- 写完 end 标记就结束本轮输出，等待应用把渲染结果告诉你；下一轮再继续讲解图形。"""
 
 const val CALCULATOR_AGENT_PROMPT = """计算器工具（已启用）：
 遇到需要精确数值计算、复数运算或容易算错的算术时，可以使用应用内置计算器。格式必须严格如下，标记各占一行：
@@ -301,7 +329,27 @@ const val CALCULATOR_AGENT_PROMPT = """计算器工具（已启用）：
 [${'$'}${'$'}calc_end${'$'}${'$'}]
 - 一个块只写一个表达式，不要写等号、单位或中文；应用会显示计算结果。
 - 支持 + - * / ^、括号、pi、e、i（虚数单位），以及 sin cos tan asin acos atan sinh cosh tanh sqrt abs exp ln log10 floor ceil round re im conj arg。
-- 计算器只负责数值，不负责符号推导。不要在思考过程中使用计算器标记；不要编造计算结果，最终解释可以引用“上方计算结果”。"""
+- 计算器只负责数值，不负责符号推导。不要在思考过程中使用计算器标记；不要编造计算结果，最终解释可以引用“上方计算结果”。
+- 写完 end 标记就结束本轮输出，等待应用把数值结果告诉你；下一轮再继续推导。"""
+
+const val LINEAR_ALGEBRA_AGENT_PROMPT = """线性代数计算器（已启用）：
+需要精确的符号推导或矩阵运算时使用它。格式必须严格如下，标记各占一行：
+[${'$'}${'$'}linalg_start${'$'}${'$'}]
+det: x,1,0; 1,x,1; 0,1,x
+factor: a^2 - 2*a*b + b^2
+[${'$'}${'$'}linalg_end${'$'}${'$'}]
+
+命令写法（命令名与参数之间用英文冒号）：
+- det: 矩阵 —— 方阵行列式，结果会自动因式分解；符号矩阵建议不超过 6 阶
+- rank: 矩阵 ；inv: 矩阵 ；rref: 矩阵 ；transpose: 矩阵 ；trace: 矩阵
+- charpoly: 矩阵 —— 特征多项式 det(λI − A)
+- solve: A=2,1;1,3 | b=1;2 —— 解 Ax=b（b 用分号分隔分量）
+- mul: A=1,2;3,4 | B=5,6;7,8 —— 矩阵相乘
+- factor: 表达式 ；expand: 表达式 ；simplify: 表达式 ；subst: 表达式 | x=2, y=1
+矩阵用行分号、元素逗号，例如 a,b;c,d；每行元素个数必须一致。一个块里可以写多条命令，每条命令输出一行结果。
+表达式支持 + - * / ^、括号、隐式乘法（2a、(a+b)(a-b)）、整数与分数、符号变量；也可以直接写 det(a,b;c,d) 这种调用。
+本工具是精确符号运算：没有 sin/ln 等符号函数，也没有根式化简；需要数值时用计算器。
+写完 end 标记就结束本轮输出，等待应用把结果告诉你；下一轮再继续讲解。"""
 
 val DEFAULT_PRESETS = listOf(
     AgentPreset(
