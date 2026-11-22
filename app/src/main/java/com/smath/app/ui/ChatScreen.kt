@@ -606,9 +606,9 @@ fun ChatScreen(
             contexts = draftContexts,
             onRemoveContext = { ref -> draftContexts = draftContexts.filterNot { it.id == ref.id } },
             onAddContext = { showContextSheet = true },
-            // 只有「分支会话且已经有节点」时，左下角才换成拓扑图标；
-            // 刚打开开关、还没问第一个问题时仍然是 @，否则点了也没有图可看。
-            branchMode = active?.let { it.complexBranching && it.nodes.isNotEmpty() } == true,
+            // 进入分支会话后左下角就是拓扑入口（哪怕还没问第一句，面板里会显示
+            // 一个「正在编辑」的占位节点）；欢迎页（没有会话）时仍然是 @。
+            branchMode = active?.let { it.complexBranching } == true,
             pendingBranchCount = active?.pendingParentIds?.size ?: 0,
             onOpenGraph = { showBranchGraph = true },
             webSearch = settings.webSearchByDefault,
@@ -647,7 +647,8 @@ fun ChatScreen(
         val conv = active
         if (conv != null && conv.complexBranching) {
             // 待建分支时下方多显示一个“正在编辑”的占位节点。
-            val placeholder = if (conv.pendingParentIds.isNotEmpty()) {
+            // 分支会话刚建立、还没问第一句时也显示占位节点，那一刻左侧图标就是拓扑入口。
+            val placeholder = if (conv.pendingParentIds.isNotEmpty() || conv.nodes.isEmpty()) {
                 val parents = conv.nodes.filter { it.id in conv.pendingParentIds }
                 val parentXs = parents.mapNotNull { it.x }
                 val parentYs = parents.mapNotNull { it.y }
@@ -656,7 +657,7 @@ fun ChatScreen(
                     parentIds = conv.pendingParentIds,
                     question = "正在编辑：等待你的提问",
                     x = if (parentXs.isEmpty()) 0f else parentXs.average().toFloat(),
-                    y = (parentYs.maxOrNull() ?: 0f) + 126f,
+                    y = if (parentYs.isEmpty()) 0f else parentYs.maxOrNull()!! + 126f,
                     createdAt = Long.MAX_VALUE
                 )
             } else {
@@ -668,13 +669,17 @@ fun ChatScreen(
                 currentNodeId = placeholder?.id ?: conv.currentNodeId,
                 pendingParentIds = conv.pendingParentIds,
                 onDismiss = { showBranchGraph = false },
-                onCreateBranch = { ids -> viewModel.createBranchFromNodes(ids) },
-                onDeleteNode = { id -> deleteNodeId = id },
-                onMoveNode = { id, x, y -> viewModel.moveBranchNodes(mapOf(id to (x to y))) },
+                onCreateBranch = { ids -> viewModel.createBranchFromNodes(ids.filter { it != "pending-edit-node" }) },
+                onDeleteNode = { id -> if (id != "pending-edit-node") deleteNodeId = id },
+                onMoveNode = { id, x, y ->
+                    if (id != "pending-edit-node") viewModel.moveBranchNodes(mapOf(id to (x to y)))
+                },
                 onJumpToNode = { id ->
-                    viewModel.jumpToBranchNode(id)
-                    showBranchGraph = false
-                    stickToBottom = true
+                    if (id != "pending-edit-node") {
+                        viewModel.jumpToBranchNode(id)
+                        showBranchGraph = false
+                        stickToBottom = true
+                    }
                 },
                 onTidy = { viewModel.tidyBranchLayout() }
             )
