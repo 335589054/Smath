@@ -15,7 +15,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +58,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
@@ -99,6 +102,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -170,6 +175,8 @@ fun ChatScreen(
     var showContextSheet by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<String?>(null) }
     var showJumpSheet by remember { mutableStateOf(false) }
+    var editTarget by remember { mutableStateOf<String?>(null) }
+    var editDraft by remember { mutableStateOf("") }
     // 每条思考单独展开；底部按钮反映“是否有任一思考展开”，
     // 点击底部按钮则统一展开/收起全部。
     val thinkingStates = remember(active?.id) { mutableStateMapOf<String, Boolean>() }
@@ -192,7 +199,10 @@ fun ChatScreen(
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    var autoScroll by remember { mutableStateOf(true) }
+    // 只有「用户此刻就在底部」才跟随新内容；用户一旦往上翻就彻底停住，
+    // 不再被流式输出拽回底部（旧实现每次收到 token 都 scrollToItem，会抢滚动）。
+    var stickToBottom by remember { mutableStateOf(true) }
+    var userScrolling by remember { mutableStateOf(false) }
     val canScrollForward by remember { derivedStateOf { listState.canScrollForward } }
 
     val takePicture = rememberLauncherForActivityResult(
@@ -298,25 +308,66 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(active?.id) {
-        autoScroll = true
-        delay(80)
-        val total = listState.layoutInfo.totalItemsCount
-        if (total > 0) {
-            listState.scrollToItem(if (active == null) 0 else total - 1)
+    // 把视口贴到内容底部：最后一项若比视口高，就补齐超出部分，而不是把它的顶部
+    // 对齐到视口顶部（那正是「瞬移」的来源）。
+    suspend fun pinToBottom() {
+        repeat(3) {
+            val info = listState.layoutInfo
+            val total = info.totalItemsCount
+            if (total == 0) return
+            val last = info.visibleItemsInfo.lastOrNull() ?: return
+            if (last.index < total - 1) {
+                listState.scrollToItem(total - 1)
+                return@repeat
+            }
+            val gap = info.viewportEndOffset - info.afterContentPadding - (last.offset + last.size)
+            if (gap >= 0) return
+            listState.scrollBy((-gap).toFloat())
         }
     }
+
+    LaunchedEffect(active?.id) {
+        stickToBottom = true
+        delay(80)
+        if (active == null) {
+            listState.scrollToItem(0)
+        } else {
+            pinToBottom()
+        }
+    }
+    // 只把「用户的手指拖动」当作接管信号，程序滚动不会误判。
     LaunchedEffect(listState) {
-        snapshotFlowCompat(listState).collect { scrolling ->
-            if (!scrolling) {
-                autoScroll = !listState.canScrollForward
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> {
+                    userScrolling = true
+                    stickToBottom = false
+                }
+                is DragInteraction.Stop -> {
+                    userScrolling = false
+                    stickToBottom = !listState.canScrollForward
+                }
+                is DragInteraction.Cancel -> {
+                    userScrolling = false
+                    stickToBottom = !listState.canScrollForward
+                }
             }
         }
     }
-    LaunchedEffect(active?.messages?.size, streaming?.content?.length, streaming?.reasoning?.length) {
-        if (autoScroll) {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) listState.scrollToItem(total - 1)
+    // 用 snapshotFlow 合并重复触发：流式输出每个 token 都会改变内容长度，
+    // 若用 LaunchedEffect(key) 重启协程，快速输出时会在 withFrameNanos 处被反复取消，
+    // 结果一帧都滚不动。快照流是串行 + 合并的，能稳定跟上而不会卡死。
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            Triple(
+                active?.messages?.size ?: 0,
+                streaming?.content?.length ?: 0,
+                streaming?.reasoning?.length ?: 0
+            )
+        }.collect {
+            if (!stickToBottom || userScrolling) return@collect
+            withFrameNanos { }
+            pinToBottom()
         }
     }
 
@@ -341,7 +392,7 @@ fun ChatScreen(
 
     fun jumpToMessage(index: Int) {
         if (index < 0) return
-        autoScroll = false
+        stickToBottom = false
         scope.launch {
             // 没有消息时会先显示 welcome item，需要多偏移一格。
             val welcomeOffset = if (chatMessages.isEmpty()) 1 else 0
@@ -373,7 +424,7 @@ fun ChatScreen(
             onMenu = onMenu,
             onNewChat = {
                 viewModel.newChat()
-                autoScroll = true
+                stickToBottom = true
             },
             onPickModel = { showModelSheet = true },
             onExportMarkdown = exportableConversation?.let { conversation ->
@@ -430,7 +481,16 @@ fun ChatScreen(
                 }
                 items(chatMessages, key = { it.id }) { message ->
                     if (message.isUser) {
-                        UserMessage(message, onImageClick = { previewImage = it })
+                        val isLastUser = chatMessages.lastOrNull { it.role == "user" }?.id == message.id
+                        UserMessage(
+                            message = message,
+                            onImageClick = { previewImage = it },
+                            canEdit = isLastUser && streaming == null,
+                            onEdit = {
+                                editTarget = message.id
+                                editDraft = message.content
+                            }
+                        )
                     } else {
                         val isLast = chatMessages.lastOrNull()?.id == message.id
                         AssistantMessage(
@@ -444,6 +504,11 @@ fun ChatScreen(
                             drawingCanvasSize = settings.drawingCanvasSize,
                             canRetry = isLast && message.error != null,
                             onRetry = viewModel::retryLast,
+                            canRegenerate = isLast && streaming == null,
+                            onRegenerate = {
+                                stickToBottom = true
+                                viewModel.regenerateLast()
+                            },
                             onCopy = {
                                 copyText(context, message.content)
                             }
@@ -499,11 +564,8 @@ fun ChatScreen(
             onOpenJump = { showJumpSheet = true },
             canJumpBottom = canScrollForward,
             onJumpBottom = {
-                autoScroll = true
-                scope.launch {
-                    val total = listState.layoutInfo.totalItemsCount
-                    if (total > 0) listState.animateScrollToItem(total - 1)
-                }
+                stickToBottom = true
+                scope.launch { pinToBottom() }
             },
             generating = streaming != null,
             onSend = {
@@ -516,7 +578,7 @@ fun ChatScreen(
                     draftContexts = emptyList()
                     keyboard?.hide()
                     viewModel.send(text, images, contexts)
-                    autoScroll = true
+                    stickToBottom = true
                 }
             },
             onStop = viewModel::stopGenerating
@@ -531,6 +593,25 @@ fun ChatScreen(
             onJump = { index ->
                 showJumpSheet = false
                 jumpToMessage(index)
+            }
+        )
+    }
+
+    editTarget?.let { targetId ->
+        SmathTextFieldDialog(
+            title = "修改提问",
+            subtitle = "保存后会从这条消息重新生成回答，后面的内容将被覆盖",
+            label = "消息内容",
+            initial = editDraft,
+            confirmLabel = "保存并重新生成",
+            singleLine = false,
+            minLines = 3,
+            onDismiss = { editTarget = null },
+            onConfirm = { text ->
+                val id = targetId
+                editTarget = null
+                stickToBottom = true
+                viewModel.editUserMessage(id, text)
             }
         )
     }
@@ -967,7 +1048,12 @@ private fun SuggestionCard(
 }
 
 @Composable
-private fun UserMessage(message: ChatMessage, onImageClick: (String) -> Unit) {
+private fun UserMessage(
+    message: ChatMessage,
+    onImageClick: (String) -> Unit,
+    canEdit: Boolean = false,
+    onEdit: () -> Unit = {}
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End
@@ -1032,6 +1118,30 @@ private fun UserMessage(message: ChatMessage, onImageClick: (String) -> Unit) {
                     }
                 }
             }
+            if (canEdit) {
+                Row(
+                    modifier = Modifier.padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = onEdit,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            "修改",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1045,6 +1155,8 @@ private fun AssistantMessage(
     drawingCanvasSize: Int,
     canRetry: Boolean,
     onRetry: () -> Unit,
+    canRegenerate: Boolean = false,
+    onRegenerate: () -> Unit = {},
     onCopy: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1098,6 +1210,25 @@ private fun AssistantMessage(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    if (canRegenerate) {
+                        TextButton(
+                            onClick = onRegenerate,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                "重新生成",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -2230,6 +2361,3 @@ private fun copyText(context: android.content.Context, text: String) {
     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Smath", text))
     Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
 }
-
-private fun snapshotFlowCompat(listState: androidx.compose.foundation.lazy.LazyListState) =
-    androidx.compose.runtime.snapshotFlow { listState.isScrollInProgress }

@@ -74,6 +74,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -112,6 +113,7 @@ fun SettingsScreen(
     var editingGlobalPrompt by remember { mutableStateOf(false) }
     var selectingPresets by remember { mutableStateOf(false) }
     var selectedPresetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showAddProvider by remember { mutableStateOf(false) }
     var presetTransferBusy by remember { mutableStateOf(false) }
     var pendingPresetExport by remember { mutableStateOf<List<AgentPreset>>(emptyList()) }
     val context = LocalContext.current
@@ -257,8 +259,10 @@ fun SettingsScreen(
 
             item {
                 Surface(
-                    onClick = { viewModel.addProvider() },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { showAddProvider = true },
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surface,
                     border = androidx.compose.foundation.BorderStroke(
@@ -658,7 +662,13 @@ fun SettingsScreen(
                                 )
                             }
                             Text(
-                                "1.0.0",
+                                remember {
+                                    runCatching {
+                                        context.packageManager
+                                            .getPackageInfo(context.packageName, 0)
+                                            .versionName
+                                    }.getOrNull() ?: ""
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -685,6 +695,21 @@ fun SettingsScreen(
             onConfirm = {
                 viewModel.deleteProvider(provider.id)
                 deleteTarget = null
+            }
+        )
+    }
+
+    if (showAddProvider) {
+        ProviderSetupDialog(
+            onDismiss = { showAddProvider = false },
+            onConfirm = { name, baseUrl, models, apiKey ->
+                showAddProvider = false
+                val id = viewModel.addProvider(name, baseUrl, models, apiKey)
+                if (id == null) {
+                    Toast.makeText(context, "请填写 Base URL 和至少一个模型", Toast.LENGTH_SHORT).show()
+                } else {
+                    expandedProviderId = id
+                }
             }
         )
     }
@@ -725,6 +750,98 @@ fun SettingsScreen(
                 viewModel.setGlobalPrompt(it)
                 editingGlobalPrompt = false
             }
+        )
+    }
+}
+
+@Composable
+private fun ProviderSetupDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, baseUrl: String, models: List<String>, apiKey: String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf("") }
+    var modelsText by remember { mutableStateOf("") }
+    var apiKey by remember { mutableStateOf("") }
+    val models = parseModels(modelsText)
+    val urlFilled = baseUrl.isNotBlank()
+    val canSubmit = urlFilled && models.isNotEmpty()
+
+    SmathDialog(
+        title = "添加服务商",
+        subtitle = "任何 OpenAI 兼容接口都可以接入",
+        icon = Icons.Rounded.Add,
+        onDismiss = onDismiss,
+        footer = {
+            OutlinedButton(onClick = onDismiss, shape = CircleShape) { Text("取消") }
+            Button(
+                onClick = { if (canSubmit) onConfirm(name, baseUrl, models, apiKey) },
+                enabled = canSubmit,
+                shape = CircleShape
+            ) { Text("添加") }
+        }
+    ) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("名称") },
+            placeholder = { Text("例如：阿里云百炼") },
+            shape = RoundedCornerShape(13.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Base URL") },
+            placeholder = { Text("https://api.example.com/v1") },
+            leadingIcon = {
+                Icon(
+                    Icons.Rounded.Language,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            supportingText = { Text("通常以 /v1 结尾，省略协议时自动补 https://") },
+            shape = RoundedCornerShape(13.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp
+            )
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = modelsText,
+            onValueChange = { modelsText = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("模型") },
+            placeholder = { Text("每行一个，例如 deepseek-v3") },
+            minLines = 2,
+            maxLines = 4,
+            shape = RoundedCornerShape(13.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("API Key（可稍后再填）") },
+            placeholder = { Text("sk-...") },
+            leadingIcon = {
+                Icon(
+                    Icons.Rounded.Key,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            shape = RoundedCornerShape(13.dp)
         )
     }
 }

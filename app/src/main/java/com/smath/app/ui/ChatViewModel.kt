@@ -582,13 +582,51 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryLast() {
+        regenerateLast()
+    }
+
+    /** 重新生成最后一次回答：丢掉末尾的 assistant 消息，再从用户那一轮重新请求。 */
+    fun regenerateLast() {
         val conv = _activeId.value?.let { id -> _data.value.conversations.firstOrNull { it.id == id } } ?: return
-        if (generationJob?.isActive == true) return
-        val last = conv.messages.lastOrNull()
-        if (last != null && last.role == "assistant" && last.error != null) {
-            updateConversation(conv.id) { it.copy(messages = it.messages.dropLast(1)) }
+        if (generationJob?.isActive == true) {
+            _events.tryEmit("正在回答中，请稍候或先停止生成")
+            return
         }
-        if (conv.messages.none { it.role == "user" }) return
+        val lastAssistant = conv.messages.indexOfLast { it.isAssistant }
+        val kept = if (lastAssistant >= 0) conv.messages.take(lastAssistant) else conv.messages
+        if (kept.none { it.role == "user" }) return
+        updateConversation(conv.id) {
+            it.copy(messages = kept, updatedAt = System.currentTimeMillis())
+        }
+        startGeneration(conv.id)
+    }
+
+    /**
+     * 修改某条用户消息后重新生成：截断该消息之后的所有内容，用新文本重新提问。
+     * 图片与 @ 上下文引用保持不变。
+     */
+    fun editUserMessage(messageId: String, newText: String) {
+        val conv = _activeId.value?.let { id -> _data.value.conversations.firstOrNull { it.id == id } } ?: return
+        if (generationJob?.isActive == true) {
+            _events.tryEmit("正在回答中，请稍候或先停止生成")
+            return
+        }
+        val index = conv.messages.indexOfFirst { it.id == messageId && it.role == "user" }
+        if (index < 0) return
+        val clean = newText.trim()
+        if (clean.isEmpty()) {
+            _events.tryEmit("消息内容不能为空")
+            return
+        }
+        val edited = conv.messages[index].copy(content = clean)
+        val kept = conv.messages.take(index) + edited
+        updateConversation(conv.id) {
+            it.copy(
+                messages = kept,
+                title = if (it.titleGenerated) it.title else makeTitle(clean, edited.imagePaths.isNotEmpty()),
+                updatedAt = System.currentTimeMillis()
+            )
+        }
         startGeneration(conv.id)
     }
 
@@ -704,17 +742,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addProvider() {
+    /**
+     * 新建服务商。以前这里直接把 name / baseUrl / 模型写成示例值塞进输入框，
+     * 用户得先删掉 "https://api.example.com/v1" 才能填自己的地址——现在只写入
+     * 用户真正填过的内容，示例值退到 placeholder。
+     */
+    fun addProvider(
+        name: String,
+        baseUrl: String,
+        modelNames: List<String>,
+        apiKey: String = ""
+    ): String? {
+        val cleanUrl = normalizeBaseUrl(baseUrl)
+        val models = modelNames.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (cleanUrl.isBlank() || models.isEmpty()) return null
         val provider = ProviderConfig(
             id = "custom_${System.currentTimeMillis()}",
-            name = "自定义服务商",
-            baseUrl = "https://api.example.com/v1",
-            models = listOf("model-name"),
-            defaultModel = "model-name",
+            name = name.trim().ifBlank { "自定义服务商" },
+            baseUrl = cleanUrl,
+            apiKey = apiKey.trim(),
+            models = models,
+            defaultModel = models.first(),
             kind = "custom",
             colorIndex = _data.value.settings.providers.size
         )
         updateData { it.copy(settings = it.settings.copy(providers = it.settings.providers + provider)) }
+        return provider.id
+    }
+
+    private fun normalizeBaseUrl(raw: String): String {
+        val text = raw.trim().trimEnd('/')
+        if (text.isBlank()) return ""
+        return when {
+            text.startsWith("http://", ignoreCase = true) -> text
+            text.startsWith("https://", ignoreCase = true) -> text
+            else -> "https://$text"
+        }
     }
 
     fun deleteProvider(providerId: String) {

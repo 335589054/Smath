@@ -3,6 +3,8 @@ package com.smath.app.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -79,7 +83,15 @@ fun SmathDialog(
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
                 )
             ) {
-                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
+                // 内容较长（如添加服务商的四个输入框）或弹出键盘时，弹窗可滚动，
+                // 避免底部按钮被顶出屏幕。
+                val maxDialogHeight = (LocalConfiguration.current.screenHeightDp * 0.86f).dp
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = maxDialogHeight)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 20.dp)
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (icon != null) {
                             Box(
@@ -142,7 +154,9 @@ fun SmathTextFieldDialog(
     onConfirm: (String) -> Unit,
     subtitle: String? = null,
     placeholder: String = "",
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    singleLine: Boolean = true,
+    minLines: Int = 1
 ) {
     var value by remember(initial) { mutableStateOf(initial) }
     val focusManager = LocalFocusManager.current
@@ -171,9 +185,11 @@ fun SmathTextFieldDialog(
             onValueChange = { value = it },
             label = { Text(label) },
             placeholder = { if (placeholder.isNotBlank()) Text(placeholder) },
-            singleLine = true,
+            singleLine = singleLine,
+            minLines = minLines,
+            maxLines = if (singleLine) 1 else 8,
             shape = RoundedCornerShape(16.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardOptions = KeyboardOptions(imeAction = if (singleLine) ImeAction.Done else ImeAction.Default),
             keyboardActions = KeyboardActions(onDone = { submit() }),
             modifier = Modifier.fillMaxWidth()
         )
