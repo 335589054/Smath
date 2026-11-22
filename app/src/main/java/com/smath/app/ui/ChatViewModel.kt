@@ -1184,7 +1184,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 conv.nodes + node
             }
             conv.copy(
-                nodes = layoutNodes(nodes),
+                nodes = layoutNodes(nodes) ?: nodes,
                 currentNodeId = node.id,
                 pendingParentIds = emptyList(),
                 updatedAt = System.currentTimeMillis()
@@ -1193,41 +1193,116 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 自动布局：按层分 y、按叶子分 x，用户拖过的节点保持原位。 */
-    private fun layoutNodes(nodes: List<BranchNode>): List<BranchNode> {
+    /**
+     * 按层级重新排布节点。返回 null 表示这张图目前排不了（存在环），调用方应放弃并提示用户。
+     *
+     * 规则：
+     * 1. 深度 = 最长路径深度（0 起），同一深度的节点落在同一行，按创建顺序从左到右。
+     * 2. 普通合并（两个同一行的节点汇合）：新节点落在下一行，横向位置由同层顺序自然决定。
+     * 3. 「回卷合并」（把一个非末端节点与它自己下游的某个节点合并，例如 1-2-3-4 再把 2 和 4 合并）：
+     *    深度演算会退化成一条直线，所以这类节点改为落在**最深的那个父节点所在行**，并排到该行最右侧，
+     *    这样图上看得出它是从两条线拉过来的分叉，而不是链的延续。
+     */
+    private fun layoutNodes(nodes: List<BranchNode>): List<BranchNode>? {
         if (nodes.isEmpty()) return nodes
         val byId = nodes.associateBy { it.id }
-        val children = mutableMapOf<String, MutableList<String>>()
-        val roots = mutableListOf<String>()
-        nodes.forEach { node ->
-            val parents = node.parentIds.filter { byId.containsKey(it) }
-            if (parents.isEmpty()) roots += node.id
-            parents.forEach { parent -> children.getOrPut(parent) { mutableListOf() } += node.id }
-        }
+        val ordered = nodes.sortedBy { it.createdAt }
+
         val depth = mutableMapOf<String, Int>()
         fun depthOf(id: String, visiting: MutableSet<String>): Int {
             depth[id]?.let { return it }
-            if (!visiting.add(id)) return 0
+            if (!visiting.add(id)) return -1
             val parents = byId[id]?.parentIds.orEmpty().filter { byId.containsKey(it) }
-            val value = if (parents.isEmpty()) 0 else parents.maxOf { depthOf(it, visiting) } + 1
+            var value = 0
+            if (parents.isNotEmpty()) {
+                var maxParent = -1
+                parents.forEach { parent ->
+                    val parentDepth = depthOf(parent, visiting)
+                    if (parentDepth < 0) return -1
+                    if (parentDepth > maxParent) maxParent = parentDepth
+                }
+                value = maxParent + 1
+            }
+            visiting.remove(id)
             depth[id] = value
             return value
         }
-        nodes.forEach { depthOf(it.id, mutableSetOf()) }
-        val xs = mutableMapOf<String, Float>()
-        var leafIndex = 0f
-        fun assign(id: String) {
-            if (xs.containsKey(id)) return
-            val kids = children[id].orEmpty()
-            if (kids.isEmpty()) {
-                xs[id] = leafIndex
-                leafIndex += NODE_X_GAP
-            } else {
-                kids.forEach { assign(it) }
-                xs[id] = kids.mapNotNull { xs[it] }.average().toFloat()
+        nodes.forEach { if (depthOf(it.id, mutableSetOf()) < 0) return null }
+
+        // 回卷合并检测：某个父亲是另一个父亲的祖先，说明这条边跨过了已有的下游链路。
+        fun isAncestor(candidate: String, of: String): Boolean {
+            val seen = HashSet<String>()
+            val queue = ArrayDeque<String>()
+            queue.addLast(of)
+            while (queue.isNotEmpty()) {
+                val id = queue.removeFirst()
+                if (!seen.add(id)) continue
+                byId[id]?.parentIds.orEmpty().forEach { parent ->
+                    if (parent == candidate) return true
+                    if (byId.containsKey(parent)) queue.addLast(parent)
+                }
+            }
+            return false
+        }
+
+        val wrapped = mutableSetOf<String>()
+        ordered.forEach { node ->
+            val parents = node.parentIds.filter { byId.containsKey(it) }
+            if (parents.size >= 2) {
+                val wrap = parents.any { a -> parents.any { b -> a != b && isAncestor(a, b) } }
+                if (wrap) {
+                    depth[node.id] = parents.maxOf { depth[it] ?: 0 }
+                    wrapped += node.id
+                }
             }
         }
-        roots.forEach { assign(it) }
-        nodes.filter { it.id !in xs }.forEach { assign(it.id) }
+        if (wrapped.isNotEmpty()) {
+            // 被回卷合并影响的下游节点，深度需要重新按「父节点深度 +1」放宽。
+            val relaxed = mutableMapOf<String, Int>()
+            fun relax(id: String, visiting: MutableSet<String>): Int {
+                relaxed[id]?.let { return it }
+                if (!visiting.add(id)) return 0
+                val parents = byId[id]?.parentIds.orEmpty().filter { byId.containsKey(it) }
+                val value = if (parents.isEmpty()) depth[id] ?: 0 else parents.maxOf { relax(it, visiting) } + 1
+                visiting.remove(id)
+                relaxed[id] = value
+                return value
+            }
+            nodes.forEach { relax(it.id, mutableSetOf()) }
+            relaxed.forEach { (id, value) -> depth[id] = if (id in wrapped) depth[id] ?: value else value }
+        }
+
+        val rows = LinkedHashMap<Int, MutableList<String>>()
+        ordered.forEach { node ->
+            val row = depth[node.id] ?: 0
+            rows.getOrPut(row) { mutableListOf() }.add(node.id)
+        }
+        val xs = mutableMapOf<String, Float>()
+        val nodeWidth = 132f
+        rows.forEach { (_, ids) ->
+            // 先给普通节点按创建顺序排成一行
+            var column = 0f
+            ids.filter { it !in wrapped }.forEach { id ->
+                xs[id] = column
+                column += NODE_X_GAP
+            }
+            // 回卷合并的节点贴在自己最深父节点的右侧，尽量少占横向空间
+            ids.filter { it in wrapped }.forEach { id ->
+                val parents = byId[id]?.parentIds.orEmpty().filter { byId.containsKey(it) }
+                val base = parents.mapNotNull { xs[it] }.maxOrNull() ?: 0f
+                var candidate = base + nodeWidth + 26f
+                var guard = 0
+                while (guard++ < 40 && ids.any { other ->
+                        other != id && xs[other]?.let { otherX ->
+                            kotlin.math.abs(otherX - candidate) < nodeWidth + 12f
+                        } == true
+                    }
+                ) {
+                    candidate += NODE_X_GAP
+                }
+                xs[id] = candidate
+            }
+        }
         return nodes.map { node ->
             node.copy(
                 x = node.x ?: (xs[node.id] ?: 0f),
@@ -1280,7 +1355,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val conv = activeConversation.value ?: return
         if (conv.nodes.isEmpty()) return
         val cleared = conv.nodes.map { it.copy(x = null, y = null) }
-        updateConversation(conv.id) { it.copy(nodes = layoutNodes(cleared)) }
+        val arranged = layoutNodes(cleared)
+        if (arranged == null) {
+            _events.tryEmit("这张图的合并关系成环了，暂时无法自动整理")
+            return
+        }
+        updateConversation(conv.id) { it.copy(nodes = arranged) }
         _events.tryEmit("画布已整理")
     }
 
@@ -1311,7 +1391,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val remaining = conv.nodes.filterNot { it.id in remove }
         updateConversation(conv.id) {
             it.copy(
-                nodes = layoutNodes(remaining),
+                nodes = layoutNodes(remaining) ?: remaining,
                 messages = it.messages.filterNot { message -> message.id in messageIds },
                 currentNodeId = if (it.currentNodeId in remove) remaining.lastOrNull()?.id else it.currentNodeId,
                 pendingParentIds = it.pendingParentIds.filterNot { id -> id in remove }

@@ -1,12 +1,18 @@
 package com.smath.app.ui
 
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -84,6 +90,10 @@ import kotlin.math.roundToInt
 /** 节点框宽度（dp）。 */
 private const val NODE_WIDTH_DP = 132f
 
+/** 画布缩放范围。 */
+private const val MIN_ZOOM = 0.35f
+private const val MAX_ZOOM = 2.5f
+
 /** 节点高度兜底估值（dp）：未测量到真实高度前用它画连线。 */
 private const val NODE_ESTIMATED_HEIGHT_DP = 60f
 
@@ -148,27 +158,27 @@ fun BranchGraphSheet(
     /** 正在被拖动的节点，用于提高绘制层级。 */
     var draggingNodeId by remember { mutableStateOf<String?>(null) }
 
-    /** 正在拖动的整组节点（自己 + 全部下游）：一起移动，树形结构才不会断。 */
-    var dragGroup by remember { mutableStateOf<List<String>>(emptyList()) }
+    /** 画布缩放（双指捏合调整，「归位」会重算成合适大小）。 */
+    var zoom by remember { mutableStateOf(1f) }
 
-    fun downstreamOf(rootId: String): List<String> {
-        val children = HashMap<String, MutableList<String>>()
+    /** 节点实测高度（px），连线用它算「父节点框底部中心」。 */
+    val nodeHeights = remember { mutableStateMapOf<String, Int>() }
+
+    /** 命中测试：屏幕坐标 → 节点 id（卡片按 zoom 缩放，坐标换算到屏幕空间后比较）。 */
+    fun nodeAt(position: Offset): String? {
+        var hit: String? = null
         nodes.forEach { item ->
-            item.parentIds.forEach { parent ->
-                children.getOrPut(parent) { mutableListOf() }.add(item.id)
-            }
+            val x = item.x ?: return@forEach
+            val y = item.y ?: return@forEach
+            val left = (x * density + pan.x) * zoom
+            val top = (y * density + pan.y) * zoom
+            val width = NODE_WIDTH_DP * density * zoom
+            val height = (nodeHeights[item.id] ?: 0).let {
+                if (it > 0) it.toFloat() else NODE_ESTIMATED_HEIGHT_DP * density
+            } * zoom
+            if (position.x in left..(left + width) && position.y in top..(top + height)) hit = item.id
         }
-        val found = ArrayList<String>()
-        val queue = ArrayDeque<String>()
-        val seen = HashSet<String>()
-        queue.addLast(rootId)
-        while (queue.isNotEmpty()) {
-            val id = queue.removeFirst()
-            if (!seen.add(id)) continue
-            found.add(id)
-            children[id]?.forEach { queue.addLast(it) }
-        }
-        return found
+        return hit
     }
 
     /** 多选集合。 */
@@ -176,9 +186,6 @@ fun BranchGraphSheet(
 
     /** 详情弹窗对应的节点。 */
     var detailNodeId by remember { mutableStateOf<String?>(null) }
-
-    /** 节点实测高度（px），连线用它算「父节点框底部中心」。 */
-    val nodeHeights = remember { mutableStateMapOf<String, Int>() }
 
     /** 画布可视区尺寸（px）。 */
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -224,13 +231,29 @@ fun BranchGraphSheet(
         }
         if (!found) {
             pan = Offset.Zero
+            zoom = 1f
             return
         }
         val centerX = ((minX + maxX) / 2f) * density
         val centerY = ((minY + maxY) / 2f) * density
+        val contentW = (maxX - minX) * density
+        val contentH = (maxY - minY) * density
+        val margin = 28f
+        val availableW = (viewport.width - margin * 2f).coerceAtLeast(1f)
+        val availableH = (viewport.height - margin * 2f).coerceAtLeast(1f)
+        // 归位：把整张图缩放到正好装进可视区（最多放大到 1.25 倍，避免两个节点被放得过夸张）。
+        val fitted = if (contentW <= 1f || contentH <= 1f) {
+            MAX_ZOOM.coerceAtMost(1.25f)
+        } else {
+            min(availableW / contentW, availableH / contentH).coerceIn(MIN_ZOOM, 1.25f)
+        }
+        zoom = fitted
+        // 内容坐标 → 屏幕：(content + pan) * zoom，所以要居中就是把内容中心移到可视区中心。
+        val panX = viewport.width / (2f * fitted) - centerX
+        val panY = viewport.height / (2f * fitted) - centerY
         pan = Offset(
-            (viewport.width / 2f - centerX).coerceIn(-panLimitPx, panLimitPx),
-            (viewport.height / 2f - centerY).coerceIn(-panLimitPx, panLimitPx)
+            panX.coerceIn(-panLimitPx, panLimitPx),
+            panY.coerceIn(-panLimitPx, panLimitPx)
         )
     }
 
@@ -256,6 +279,9 @@ fun BranchGraphSheet(
     LaunchedEffect(nodes) {
         if (pendingFit) {
             pendingFit = false
+            fitContent()
+            // 卡片高度要等一帧才量准，量准后再居中一次，避免整理后图偏到左上角。
+            kotlinx.coroutines.delay(90)
             fitContent()
         }
     }
@@ -313,18 +339,87 @@ fun BranchGraphSheet(
                     .background(variantColor.copy(alpha = 0.45f))
                     .onSizeChanged { viewport = it }
                     .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            change.consume()
-                            // 拖节点时由节点手势接管，画布不平移
-                            if (draggingNodeId == null) {
-                                pan = Offset(
-                                    (pan.x + dragAmount.x).coerceIn(-panLimitPx, panLimitPx),
-                                    (pan.y + dragAmount.y).coerceIn(-panLimitPx, panLimitPx)
-                                )
+                        // 画布级统一处理：命中节点就拖节点（绝对跟踪，完全跟手），否则平移；双指缩放。
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var last = down.position
+                            val startPos = down.position
+                            val startPan = pan
+                            val startZoom = zoom
+                            var nodeId = nodeAt(down.position)
+                            var moved = false
+                            var up = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.changes.size > 1) {
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+                                    zoom = (startZoom * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                    pan = Offset(
+                                        (startPan.x + panChange.x).coerceIn(-panLimitPx, panLimitPx),
+                                        (startPan.y + panChange.y).coerceIn(-panLimitPx, panLimitPx)
+                                    )
+                                    event.changes.forEach { it.consume() }
+                                    moved = true
+                                    continue
+                                }
+                                val change = event.changes.first()
+                                if (change.changedToUp()) {
+                                    change.consume()
+                                    up = true
+                                    break
+                                }
+                                val delta = change.position - last
+                                last = change.position
+                                if (delta != Offset.Zero) moved = true
+                                if (nodeId != null) {
+                                    change.consume()
+                                    // 绝对跟踪：节点位移 = 手指相对按下点的位移，不做增量累加，避免丢 slop 造成「不跟手」
+                                    draggingNodeId = nodeId
+                                    dragPx[nodeId!!] = (change.position - startPos) / zoom
+                                } else if ((change.position - startPos).getDistance() > viewConfiguration.touchSlop) {
+                                    change.consume()
+                                    pan = Offset(
+                                        (startPan.x + (change.position.x - startPos.x)).coerceIn(-panLimitPx, panLimitPx),
+                                        (startPan.y + (change.position.y - startPos.y)).coerceIn(-panLimitPx, panLimitPx)
+                                    )
+                                }
+                            }
+                            val dragged = nodeId
+                            if (dragged != null) {
+                                val total = dragPx[dragged] ?: Offset.Zero
+                                dragPx.clear()
+                                draggingNodeId = null
+                                if (moved && (total.x != 0f || total.y != 0f)) {
+                                    val node = nodes.firstOrNull { it.id == dragged }
+                                    if (node != null) {
+                                        onMoveNode(
+                                            dragged,
+                                            (node.x ?: 0f) + total.x / density,
+                                            (node.y ?: 0f) + total.y / density
+                                        )
+                                    }
+                                } else if (up) {
+                                    val held = SystemClock.uptimeMillis() - down.uptimeMillis
+                                    if (held >= viewConfiguration.longPressTimeoutMillis) {
+                                        detailNodeId = dragged
+                                    } else {
+                                        selected = if (dragged in selected) selected - dragged else selected + dragged
+                                    }
+                                }
                             }
                         }
                     }
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = zoom
+                            scaleY = zoom
+                            transformOrigin = TransformOrigin(0f, 0f)
+                        }
+                ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     if (nodes.isNotEmpty()) {
                         val widthPx = NODE_WIDTH_DP * density
@@ -397,48 +492,10 @@ fun BranchGraphSheet(
                                 )
                             }
                             .zIndex(if (isDragging) 2f else 1f),
-                        onMeasured = { height -> nodeHeights[node.id] = height },
-                        onTap = {
-                            selected = if (node.id in selected) selected - node.id else selected + node.id
-                        },
-                        onShowDetail = { detailNodeId = node.id },
-                        onDragStart = {
-                            dragGroup = downstreamOf(node.id)
-                            draggingNodeId = node.id
-                            dragGroup.forEach { dragPx[it] = Offset.Zero }
-                        },
-                        onDrag = { delta ->
-                            dragGroup.forEach { id ->
-                                dragPx[id] = (dragPx[id] ?: Offset.Zero) + delta
-                            }
-                        },
-                        onDragEnd = {
-                            var movedAny = false
-                            dragGroup.forEach { id ->
-                                val item = nodes.firstOrNull { it.id == id } ?: return@forEach
-                                val total = dragPx[id] ?: Offset.Zero
-                                if (total.getDistance() / density > DRAG_THRESHOLD_DP) {
-                                    movedAny = true
-                                    onMoveNode(
-                                        id,
-                                        (item.x ?: 0f) + total.x / density,
-                                        (item.y ?: 0f) + total.y / density
-                                    )
-                                }
-                            }
-                            dragPx.clear()
-                            draggingNodeId = null
-                            dragGroup = emptyList()
-                            if (!movedAny) {
-                                // 拖动力度不足 = 查看详情
-                                detailNodeId = node.id
-                            }
-                        },
-                        onDragCancel = {
-                            dragPx.remove(node.id)
-                            draggingNodeId = null
-                        }
+                        onMeasured = { height -> nodeHeights[node.id] = height }
                     )
+                }
+
                 }
 
                 if (nodes.isEmpty()) {
@@ -572,15 +629,8 @@ private fun BranchNodeCard(
     isSelected: Boolean,
     isPendingParent: Boolean,
     modifier: Modifier = Modifier,
-    onMeasured: (Int) -> Unit,
-    onTap: () -> Unit,
-    onShowDetail: () -> Unit,
-    onDragStart: () -> Unit,
-    onDrag: (Offset) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit
+    onMeasured: (Int) -> Unit
 ) {
-    val longPressMark = remember(node.id) { longArrayOf(0L) }
     val shape = RoundedCornerShape(12.dp)
     val primary = MaterialTheme.colorScheme.primary
     val borderColor = if (isEditing || isSelected) primary else MaterialTheme.colorScheme.outlineVariant
@@ -602,30 +652,6 @@ private fun BranchNodeCard(
             .width(NODE_WIDTH_DP.dp)
             .shadow(3.dp, shape, clip = false)
             .onGloballyPositioned { coordinates -> onMeasured(coordinates.size.height) }
-            .pointerInput(node.id) {
-                detectTapGestures(
-                    onTap = {
-                        val now = System.currentTimeMillis()
-                        if (now - longPressMark[0] > TAP_SUPPRESS_WINDOW_MS) onTap()
-                    },
-                    onLongPress = { onShowDetail() }
-                )
-            }
-            .pointerInput(node.id) {
-                // 直接拖动：手指移动超过系统 touch slop 即开始搬位置，无需长按。
-                detectDragGestures(
-                    onDragStart = {
-                        longPressMark[0] = System.currentTimeMillis()
-                        onDragStart()
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        onDrag(dragAmount)
-                    },
-                    onDragEnd = { onDragEnd() },
-                    onDragCancel = { onDragCancel() }
-                )
-            }
     ) {
         Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
