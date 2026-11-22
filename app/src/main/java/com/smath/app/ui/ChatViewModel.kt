@@ -16,6 +16,7 @@ import com.smath.app.data.AgentPreset
 import com.smath.app.data.AnswerStyle
 import com.smath.app.data.AppData
 import com.smath.app.data.AppStore
+import com.smath.app.data.BranchNode
 import com.smath.app.data.ChatMessage
 import com.smath.app.data.ContextReference
 import com.smath.app.data.Conversation
@@ -88,6 +89,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _organize = MutableStateFlow(OrganizeUiState())
     val organize: StateFlow<OrganizeUiState> = _organize.asStateFlow()
 
+    /** 新会话是否开启「复杂分支对话」，只影响接下来创建的会话。 */
+    private val _branchMode = MutableStateFlow(false)
+    val branchMode: StateFlow<Boolean> = _branchMode.asStateFlow()
+
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val events = _events.asSharedFlow()
 
@@ -95,6 +100,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var generationJob: Job? = null
     private var generationToken = 0
     private var organizeJob: Job? = null
+
+    /** 拓扑图节点间距（dp）：x 为同层相邻节点间距，y 为层间距。 */
+    private val NODE_X_GAP = 158f
+    private val NODE_Y_GAP = 126
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -161,6 +170,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_activeId.value == id) return
         if (generationJob?.isActive == true) generationJob?.cancel()
         _activeId.value = id
+        // 旧数据或异常中断时 currentNodeId 可能为空，补成最后一个节点。
+        val conv = _data.value.conversations.firstOrNull { it.id == id } ?: return
+        if (conv.complexBranching && conv.currentNodeId == null && conv.nodes.isNotEmpty()) {
+            updateConversation(id) { it.copy(currentNodeId = it.nodes.maxByOrNull { node -> node.createdAt }?.id) }
+        }
+    }
+
+    /** 检查更新 / 下载的源：official、gh-proxy.com、gh-proxy.org。 */
+    fun setUpdateSource(source: String) {
+        updateData { it.copy(settings = it.settings.copy(updateSource = source)) }
     }
 
     fun selectPreset(id: String) {
@@ -277,7 +296,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 presetName = preset.name,
                 stageLabel = if (preset.stage == Stage.NONE) "" else preset.stage.label,
                 styles = preset.effectiveStyles.map { it.label },
-                messages = emptyList()
+                messages = emptyList(),
+                complexBranching = _branchMode.value
             )
             val created = conv
             updateData { data ->
@@ -353,6 +373,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             publish(true)
+            // 复杂分支对话：只把当前节点路径（或多父节点的全部上游）作为上下文。
+            // 声明在 try 外，取消/异常分支也要用它挂节点。
+            val roundUser = conversation.messages.lastOrNull { it.role == "user" }
+            val branchParents = if (conversation.complexBranching) {
+                conversation.pendingParentIds.ifEmpty { listOfNotNull(conversation.currentNodeId) }
+            } else {
+                emptyList()
+            }
             try {
                 if (provider == null) {
                     throw ApiCallException(
@@ -383,8 +411,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     phase = "正在思考"
                     publish(true)
                 }
-                val history = conversation.messages.filter {
-                    it.role == "user" || (it.role == "assistant" && it.error == null && it.content.isNotBlank())
+                // 复杂分支对话：只把当前节点路径（或多父节点的全部上游）作为上下文。
+                val history = if (conversation.complexBranching) {
+                    branchHistory(conversation, branchParents)
+                        .filter {
+                            it.role == "user" ||
+                                (it.role == "assistant" && it.error == null && it.content.isNotBlank())
+                        }
+                } else {
+                    conversation.messages.filter {
+                        it.role == "user" || (it.role == "assistant" && it.error == null && it.content.isNotBlank())
+                    }
                 }
                 val searchContext = if (citations.isNotEmpty()) {
                     val outcome = com.smath.app.api.SearchOutcome(
@@ -393,7 +430,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     buildSearchContext(outcome)
                 } else ""
-                val system = listOf(conversation.systemPrompt, searchContext)
+                val topology = if (conversation.complexBranching && branchParents.size >= 2) {
+                    branchTopologyText(conversation, branchParents)
+                } else {
+                    ""
+                }
+                val system = listOf(conversation.systemPrompt, topology, searchContext)
                     .filter { it.isNotBlank() }
                     .joinToString("\n\n")
                 val isFirstExchange = conversation.messages.count { it.role == "user" } == 1
@@ -513,6 +555,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         notice = notice
                     )
                 )
+                if (conversation.complexBranching && token == generationToken) {
+                    attachBranchNode(
+                        conversationId = conversationId,
+                        userMessage = roundUser,
+                        assistantMessageId = messageId,
+                        answer = finalContent,
+                        parents = branchParents
+                    )
+                }
                 if (isFirstExchange && finalContent.isNotBlank() && token == generationToken) {
                     generateConversationTitle(
                         conversationId = conversationId,
@@ -537,6 +588,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 notice = if (finalContent.isNotBlank()) "已停止生成" else null
                             )
                         )
+                        if (conversation.complexBranching) {
+                            attachBranchNode(
+                                conversationId = conversationId,
+                                userMessage = roundUser,
+                                assistantMessageId = messageId,
+                                answer = finalContent,
+                                parents = branchParents
+                            )
+                        }
                     }
                 }
                 throw e
@@ -1014,6 +1074,237 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearOrganizeState() {
         _organize.value = OrganizeUiState()
+    }
+
+    // ---------------- 复杂分支对话 ----------------
+
+    /** 新会话是否开启「复杂分支对话」；已进入会话后不能改。 */
+    fun setBranchMode(enabled: Boolean) {
+        if (_activeId.value != null) {
+            _events.tryEmit("分支模式只在新会话开始时选择")
+            return
+        }
+        _branchMode.value = enabled
+    }
+
+    /** 界面上真正要渲染的消息：复杂分支会话只显示当前节点所在路径。 */
+    fun visibleMessages(conversation: Conversation?): List<ChatMessage> {
+        if (conversation == null) return emptyList()
+        if (!conversation.complexBranching || conversation.nodes.isEmpty()) return conversation.messages
+        val allowed = ancestors(conversation.nodes, listOfNotNull(conversation.currentNodeId))
+            .flatMap { node ->
+                listOfNotNull(
+                    node.userMessageId.ifBlank { null },
+                    node.assistantMessageId.ifBlank { null }
+                )
+            }
+            .toHashSet()
+        // 还没挂到任何节点上的最后一条提问（正在等回答）也要显示；
+        // 已经挂了节点的提问属于别的分支，不能漏进当前视图。
+        val attachedUserIds = conversation.nodes.map { it.userMessageId }.toHashSet()
+        val pendingUser = conversation.messages.lastOrNull { it.role == "user" && it.id !in attachedUserIds }
+        return conversation.messages.filter { it.id in allowed || (pendingUser != null && it.id == pendingUser.id) }
+    }
+
+    /** 从给定根节点沿 parentIds 向上回溯，返回全部祖先（含根），按时间升序。 */
+    private fun ancestors(nodes: List<BranchNode>, roots: List<String>): List<BranchNode> {
+        val byId = nodes.associateBy { it.id }
+        val seen = LinkedHashMap<String, BranchNode>()
+        val queue = ArrayDeque<String>()
+        roots.forEach { queue.addLast(it) }
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            val node = byId[id] ?: continue
+            if (seen.putIfAbsent(id, node) != null) continue
+            node.parentIds.forEach { queue.addLast(it) }
+        }
+        return seen.values.sortedBy { it.createdAt }
+    }
+
+    private fun branchHistory(conversation: Conversation, parents: List<String>): List<ChatMessage> {
+        val ids = ancestors(conversation.nodes, parents)
+            .flatMap { node ->
+                listOfNotNull(
+                    node.userMessageId.ifBlank { null },
+                    node.assistantMessageId.ifBlank { null }
+                )
+            }
+            .toHashSet()
+        val lastUser = conversation.messages.lastOrNull { it.role == "user" }
+        return conversation.messages.filter { it.id in ids || (lastUser != null && it.id == lastUser.id) }
+    }
+
+    /** 合并分支时把拓扑关系也写进上下文，模型才知道这些内容分别来自哪条线。 */
+    private fun branchTopologyText(conversation: Conversation, parents: List<String>): String {
+        val involved = ancestors(conversation.nodes, parents)
+        if (involved.isEmpty()) return ""
+        val indexOf = involved.withIndex().associate { (index, node) -> node.id to (index + 1) }
+        val builder = StringBuilder()
+        builder.appendLine("这次回答来自一次「分支合并」：用户选中了多条分支，你需要综合它们的内容。")
+        builder.appendLine("节点拓扑（节点 = 一轮问答，箭头表示 上游 → 下游）：")
+        involved.forEach { node ->
+            val from = node.parentIds.mapNotNull { indexOf[it] }.joinToString("、") { "#$it" }
+                .ifBlank { "起点" }
+            builder.appendLine("- #${indexOf[node.id]}（上游 $from）：" + node.snippet.take(60))
+        }
+        val merged = parents.mapNotNull { indexOf[it] }.joinToString("、") { "#$it" }
+        builder.appendLine("新分支由 $merged 合并而来：请综合利用这些分支里的信息，必要时说明不同分支的思路差异。")
+        return builder.toString().trim()
+    }
+
+    /** 一轮问答结束后登记成节点；同一轮重复生成时更新而不是新增。 */
+    private fun attachBranchNode(
+        conversationId: String,
+        userMessage: ChatMessage?,
+        assistantMessageId: String,
+        answer: String,
+        parents: List<String>
+    ) {
+        if (userMessage == null) return
+        updateConversation(conversationId) { conv ->
+            if (!conv.complexBranching) return@updateConversation conv
+            val existing = conv.nodes.firstOrNull { it.userMessageId == userMessage.id }
+            val validParents = parents.filter { pid -> conv.nodes.any { it.id == pid } }
+            val node = if (existing != null) {
+                existing.copy(assistantMessageId = assistantMessageId, answer = answer)
+            } else {
+                BranchNode(
+                    id = UUID.randomUUID().toString(),
+                    parentIds = validParents,
+                    userMessageId = userMessage.id,
+                    assistantMessageId = assistantMessageId,
+                    question = userMessage.content.ifBlank { "（图片问题）" },
+                    answer = answer,
+                    createdAt = userMessage.createdAt
+                )
+            }
+            val nodes = if (existing != null) {
+                conv.nodes.map { if (it.id == node.id) node else it }
+            } else {
+                conv.nodes + node
+            }
+            conv.copy(
+                nodes = layoutNodes(nodes),
+                currentNodeId = node.id,
+                pendingParentIds = emptyList(),
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /** 自动布局：按层分 y、按叶子分 x，用户拖过的节点保持原位。 */
+    private fun layoutNodes(nodes: List<BranchNode>): List<BranchNode> {
+        if (nodes.isEmpty()) return nodes
+        val byId = nodes.associateBy { it.id }
+        val children = mutableMapOf<String, MutableList<String>>()
+        val roots = mutableListOf<String>()
+        nodes.forEach { node ->
+            val parents = node.parentIds.filter { byId.containsKey(it) }
+            if (parents.isEmpty()) roots += node.id
+            parents.forEach { parent -> children.getOrPut(parent) { mutableListOf() } += node.id }
+        }
+        val depth = mutableMapOf<String, Int>()
+        fun depthOf(id: String, visiting: MutableSet<String>): Int {
+            depth[id]?.let { return it }
+            if (!visiting.add(id)) return 0
+            val parents = byId[id]?.parentIds.orEmpty().filter { byId.containsKey(it) }
+            val value = if (parents.isEmpty()) 0 else parents.maxOf { depthOf(it, visiting) } + 1
+            depth[id] = value
+            return value
+        }
+        nodes.forEach { depthOf(it.id, mutableSetOf()) }
+        val xs = mutableMapOf<String, Float>()
+        var leafIndex = 0f
+        fun assign(id: String) {
+            if (xs.containsKey(id)) return
+            val kids = children[id].orEmpty()
+            if (kids.isEmpty()) {
+                xs[id] = leafIndex
+                leafIndex += NODE_X_GAP
+            } else {
+                kids.forEach { assign(it) }
+                xs[id] = kids.mapNotNull { xs[it] }.average().toFloat()
+            }
+        }
+        roots.forEach { assign(it) }
+        nodes.filter { it.id !in xs }.forEach { assign(it.id) }
+        return nodes.map { node ->
+            node.copy(
+                x = node.x ?: (xs[node.id] ?: 0f),
+                y = node.y ?: ((depth[node.id] ?: 0) * NODE_Y_GAP).toFloat()
+            )
+        }
+    }
+
+    /** 选中节点后，下一条提问会以它们为父节点开启新分支（1 个＝从该节点续写新分支，多个＝合并上游）。 */
+    fun createBranchFromNodes(nodeIds: List<String>) {
+        val conv = activeConversation.value ?: return
+        if (!conv.complexBranching) return
+        val valid = nodeIds.distinct().filter { id -> conv.nodes.any { it.id == id } }
+        if (valid.isEmpty()) {
+            _events.tryEmit("请先选择一个节点")
+            return
+        }
+        updateConversation(conv.id) { it.copy(pendingParentIds = valid) }
+        _events.tryEmit(
+            if (valid.size == 1) "已选定该节点，下一条提问会从这里新建分支"
+            else "已选定 ${valid.size} 个节点，下一条提问会合并它们的上游新建分支"
+        )
+    }
+
+    fun cancelPendingBranch() {
+        val conv = activeConversation.value ?: return
+        updateConversation(conv.id) { it.copy(pendingParentIds = emptyList()) }
+    }
+
+    fun moveBranchNode(nodeId: String, x: Float, y: Float) {
+        val conv = activeConversation.value ?: return
+        updateConversation(conv.id) { current ->
+            current.copy(nodes = current.nodes.map { if (it.id == nodeId) it.copy(x = x, y = y) else it })
+        }
+    }
+
+    /** 该节点及其全部下游节点 id（删除前用于提示会一起删掉多少）。 */
+    fun branchDownstreamIds(nodeId: String): List<String> {
+        val conv = activeConversation.value ?: return emptyList()
+        val children = mutableMapOf<String, MutableList<String>>()
+        conv.nodes.forEach { node -> node.parentIds.forEach { parent -> children.getOrPut(parent) { mutableListOf() } += node.id } }
+        val result = LinkedHashSet<String>()
+        val queue = ArrayDeque<String>()
+        queue.addLast(nodeId)
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (!result.add(id)) continue
+            children[id].orEmpty().forEach { queue.addLast(it) }
+        }
+        return result.toList()
+    }
+
+    fun deleteBranchNode(nodeId: String) {
+        val conv = activeConversation.value ?: return
+        val remove = branchDownstreamIds(nodeId).toSet()
+        if (remove.isEmpty()) return
+        val messageIds = conv.nodes.filter { it.id in remove }
+            .flatMap { listOf(it.userMessageId, it.assistantMessageId) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val remaining = conv.nodes.filterNot { it.id in remove }
+        updateConversation(conv.id) {
+            it.copy(
+                nodes = layoutNodes(remaining),
+                messages = it.messages.filterNot { message -> message.id in messageIds },
+                currentNodeId = if (it.currentNodeId in remove) remaining.lastOrNull()?.id else it.currentNodeId,
+                pendingParentIds = it.pendingParentIds.filterNot { id -> id in remove }
+            )
+        }
+        _events.tryEmit(if (remove.size > 1) "已删除 ${remove.size} 个节点" else "已删除节点")
+    }
+
+    /** 跳到某个节点继续对话（下游内容会重新变成“当前分支”）。 */
+    fun jumpToBranchNode(nodeId: String) {
+        val conv = activeConversation.value ?: return
+        if (conv.nodes.none { it.id == nodeId }) return
+        updateConversation(conv.id) { it.copy(currentNodeId = nodeId, pendingParentIds = emptyList()) }
     }
 
     fun dismissEvent() {}

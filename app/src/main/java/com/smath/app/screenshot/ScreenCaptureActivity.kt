@@ -18,14 +18,20 @@ import androidx.core.content.ContextCompat
 import com.smath.app.MainActivity
 
 /**
- * 透明授权页：请求一次 MediaProjection 权限，然后把抓屏工作交给前台服务。
- * 抓屏完成后回到应用并直接打开裁剪页（平板使用较小的启动窗口）。
+ * 透明授权页，两种用途：
+ * 1. [EXTRA_ARM_ONLY] = true：设置里打开「截屏悬浮按钮」时立即申请一次录屏授权，
+ *    拿到授权后马上结束，之后点悬浮球不再弹窗。
+ * 2. 否则：悬浮球被点击但授权失效时，先补授权再截图，然后带图回到应用裁剪。
  */
 class ScreenCaptureActivity : ComponentActivity() {
 
     private var receiver: BroadcastReceiver? = null
     private val handler = Handler(Looper.getMainLooper())
     private var finished = false
+    private var armedByUs = false
+
+    private val armedOnly: Boolean
+        get() = intent?.getBooleanExtra(EXTRA_ARM_ONLY, false) == true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,7 +47,7 @@ class ScreenCaptureActivity : ComponentActivity() {
         }
         runCatching { startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE) }
             .onFailure {
-                Toast.makeText(this, "无法请求截屏权限", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "无法请求录屏授权", Toast.LENGTH_SHORT).show()
                 finish()
             }
     }
@@ -51,35 +57,68 @@ class ScreenCaptureActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_CAPTURE) return
         if (resultCode != Activity.RESULT_OK || data == null) {
+            if (!armedOnly) Toast.makeText(this, "没有获得录屏授权", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
-        registerResultReceiver()
-        val intent = Intent(this, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_CAPTURE
-            putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
-            putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+
+        if (armedOnly) {
+            ScreenCaptureService.arm(this, resultCode, data)
+            Toast.makeText(this, "截屏已就绪，点悬浮按钮即可截图", Toast.LENGTH_SHORT).show()
+            finish()
+            return
         }
-        runCatching { ContextCompat.startForegroundService(this, intent) }
-            .onFailure { finish() }
+
+        registerReceivers()
+        if (ScreenCaptureService.armed) {
+            ScreenCaptureService.capture(this)
+        } else {
+            armedByUs = true
+            ScreenCaptureService.arm(this, resultCode, data)
+        }
         handler.postDelayed({
             if (!finished) {
                 Toast.makeText(this, "截屏超时，请重试", Toast.LENGTH_SHORT).show()
                 finish()
             }
-        }, 9000)
+        }, 12000)
     }
 
-    private fun registerResultReceiver() {
+    private fun registerReceivers() {
         if (receiver != null) return
         val resultReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                val path = intent?.getStringExtra(ScreenCaptureService.EXTRA_SCREENSHOT_PATH)
-                if (!path.isNullOrBlank()) launchAppWithCrop(path)
+                when (intent?.action) {
+                    ScreenCaptureService.ACTION_ARMED -> {
+                        if (armedByUs && !finished) {
+                            armedByUs = false
+                            ScreenCaptureService.capture(this@ScreenCaptureActivity)
+                        }
+                    }
+                    ScreenCaptureService.ACTION_CAPTURED -> {
+                        val path = intent.getStringExtra(ScreenCaptureService.EXTRA_SCREENSHOT_PATH)
+                        if (!path.isNullOrBlank()) launchAppWithCrop(path)
+                    }
+                    ScreenCaptureService.ACTION_CAPTURE_ERROR -> {
+                        val message = intent.getStringExtra(ScreenCaptureService.EXTRA_ERROR)
+                        if (!finished) {
+                            Toast.makeText(
+                                this@ScreenCaptureActivity,
+                                message ?: "截图失败，请重试",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            finish()
+                        }
+                    }
+                }
             }
         }
         receiver = resultReceiver
-        val filter = IntentFilter(ScreenCaptureService.ACTION_CAPTURED)
+        val filter = IntentFilter().apply {
+            addAction(ScreenCaptureService.ACTION_ARMED)
+            addAction(ScreenCaptureService.ACTION_CAPTURED)
+            addAction(ScreenCaptureService.ACTION_CAPTURE_ERROR)
+        }
         ContextCompat.registerReceiver(
             this,
             resultReceiver,
@@ -128,5 +167,15 @@ class ScreenCaptureActivity : ComponentActivity() {
 
     companion object {
         private const val REQUEST_CAPTURE = 7102
+        const val EXTRA_ARM_ONLY = "arm_only"
+
+        /** 设置页打开截屏开关时立刻请求一次录屏授权。 */
+        fun requestArm(context: Context) {
+            val intent = Intent(context, ScreenCaptureActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                putExtra(EXTRA_ARM_ONLY, true)
+            }
+            runCatching { context.startActivity(intent) }
+        }
     }
 }

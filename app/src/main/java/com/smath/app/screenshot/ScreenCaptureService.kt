@@ -19,16 +19,19 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
-import android.os.Looper
 import android.util.DisplayMetrics
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Android 14 起 MediaProjection 必须在前台服务里使用。只抓取一帧，保存到
- * cache/screenshots，然后通过应用内广播把路径交回 ScreenCaptureActivity。
+ * 常驻的截屏前台服务。
+ *
+ * 打开「截屏悬浮按钮」时就用 [ACTION_ARM] 建立一次 MediaProjection 并保持，
+ * 之后每次点悬浮球只发 [ACTION_CAPTURE] 抓一帧——这样授权弹窗只在设置里出现一次，
+ * 也不会重复调用 createVirtualDisplay（Android 14 起同一个 MediaProjection 只允许建一次虚拟屏）。
  */
 class ScreenCaptureService : Service() {
 
@@ -37,7 +40,7 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
-    private val captured = AtomicBoolean(false)
+    private val pendingCapture = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -47,25 +50,43 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
-            ?: Activity.RESULT_CANCELED
-        @Suppress("DEPRECATION")
-        val resultData = intent?.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
-        if (intent?.action != ACTION_CAPTURE || resultCode != Activity.RESULT_OK || resultData == null) {
-            stopSelf(startId)
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_ARM -> arm(intent, startId)
+            ACTION_CAPTURE -> captureFrame()
+            ACTION_DISARM -> {
+                releaseProjection()
+                stopSelf()
+            }
+            else -> stopSelf()
         }
+        return START_STICKY
+    }
 
-        startInForeground()
-        val manager = getSystemService(MediaProjectionManager::class.java)
-        val mediaProjection = runCatching {
-            manager?.getMediaProjection(resultCode, resultData)
-        }.getOrNull()
-        if (mediaProjection == null) {
+    private fun arm(intent: Intent, startId: Int) {
+        if (projection != null) {
+            announceArmed()
+            return
+        }
+        val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+        @Suppress("DEPRECATION")
+        val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+        if (resultCode != Activity.RESULT_OK || resultData == null) {
+            broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "没有拿到录屏授权")
             stopSelf(startId)
-            return START_NOT_STICKY
+            return
+        }
+        startInForeground()
+
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        val mediaProjection = runCatching { manager?.getMediaProjection(resultCode, resultData) }
+            .getOrNull()
+        if (mediaProjection == null) {
+            broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "无法建立录屏会话")
+            stopSelf(startId)
+            return
         }
         projection = mediaProjection
+        armed = true
 
         val thread = HandlerThread("smath-screen-capture").also { it.start() }
         this.thread = thread
@@ -73,7 +94,9 @@ class ScreenCaptureService : Service() {
 
         mediaProjection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                cleanup()
+                releaseProjection()
+                armed = false
+                broadcast(ACTION_DISARMED)
                 stopSelf()
             }
         }, handler)
@@ -87,28 +110,21 @@ class ScreenCaptureService : Service() {
         )
         imageReader = reader
         reader.setOnImageAvailableListener({ available ->
-            if (!captured.compareAndSet(false, true)) {
-                available.acquireLatestImage()?.close()
-                return@setOnImageAvailableListener
-            }
-            val image = available.acquireLatestImage()
-            if (image == null) {
-                captured.set(false)
+            val image = available.acquireLatestImage() ?: return@setOnImageAvailableListener
+            if (!pendingCapture.compareAndSet(true, false)) {
+                // 没人在等截图，丢掉这一帧即可。
+                image.close()
                 return@setOnImageAvailableListener
             }
             try {
                 val path = saveImage(image)
                 if (path != null) {
-                    sendBroadcast(
-                        Intent(ACTION_CAPTURED)
-                            .setPackage(packageName)
-                            .putExtra(EXTRA_SCREENSHOT_PATH, path)
-                    )
+                    broadcast(ACTION_CAPTURED).putExtra(EXTRA_SCREENSHOT_PATH, path)
+                } else {
+                    broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "截图保存失败")
                 }
             } finally {
                 image.close()
-                cleanup()
-                stopSelf()
             }
         }, handler)
 
@@ -123,13 +139,24 @@ class ScreenCaptureService : Service() {
             handler
         )
 
-        handler.postDelayed({
-            if (!captured.get()) {
-                cleanup()
-                stopSelf()
+        announceArmed()
+        updateNotification(armedState = true)
+    }
+
+    private fun captureFrame() {
+        if (projection == null) {
+            armed = false
+            broadcast(ACTION_CAPTURE_ERROR)
+                .putExtra(EXTRA_ERROR, "截屏还没有就绪，请到设置里重新打开「截屏悬浮按钮」")
+            return
+        }
+        pendingCapture.set(true)
+        // 悬浮球刚被隐藏，屏幕会重绘并送来新帧；2.5 秒还没帧就放弃这一次。
+        handler?.postDelayed({
+            if (pendingCapture.compareAndSet(true, false)) {
+                broadcast(ACTION_CAPTURE_ERROR).putExtra(EXTRA_ERROR, "截图超时，请再点一次")
             }
-        }, 7000)
-        return START_NOT_STICKY
+        }, 2500)
     }
 
     private fun saveImage(image: android.media.Image): String? {
@@ -174,8 +201,18 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    private fun broadcast(action: String): Intent {
+        val intent = Intent(action).setPackage(packageName)
+        sendBroadcast(intent)
+        return intent
+    }
+
+    private fun announceArmed() {
+        sendBroadcast(Intent(ACTION_ARMED).setPackage(packageName))
+    }
+
     private fun startInForeground() {
-        val notification = buildNotification()
+        val notification = buildNotification(armedState = false)
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
                 NOTIFICATION_ID,
@@ -187,7 +224,12 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun cleanup() {
+    private fun updateNotification(armedState: Boolean) {
+        val manager = getSystemService(NotificationManager::class.java)
+        runCatching { manager?.notify(NOTIFICATION_ID, buildNotification(armedState)) }
+    }
+
+    private fun releaseProjection() {
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { imageReader?.close() }
@@ -197,10 +239,12 @@ class ScreenCaptureService : Service() {
         thread?.quitSafely()
         thread = null
         handler = null
+        pendingCapture.set(false)
+        armed = false
     }
 
     override fun onDestroy() {
-        cleanup()
+        releaseProjection()
         super.onDestroy()
     }
 
@@ -219,27 +263,63 @@ class ScreenCaptureService : Service() {
         )
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(armedState: Boolean): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("正在截取屏幕")
-            .setContentText("截屏完成后会自动进入裁剪页")
+            .setContentTitle(if (armedState) "截屏已就绪" else "正在准备截屏")
+            .setContentText(
+                if (armedState) "点一下蓝色悬浮按钮即可截图"
+                else "已获得录屏授权，可以随时截图"
+            )
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
     companion object {
+        const val ACTION_ARM = "com.smath.app.screenshot.ARM"
         const val ACTION_CAPTURE = "com.smath.app.screenshot.CAPTURE"
+        const val ACTION_DISARM = "com.smath.app.screenshot.DISARM"
+        const val ACTION_ARMED = "com.smath.app.screenshot.ARMED"
+        const val ACTION_DISARMED = "com.smath.app.screenshot.DISARMED"
         const val ACTION_CAPTURED = "com.smath.app.screenshot.CAPTURED"
+        const val ACTION_CAPTURE_ERROR = "com.smath.app.screenshot.ERROR"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_SCREENSHOT_PATH = "screenshot_path"
+        const val EXTRA_ERROR = "error"
         private const val CHANNEL_ID = "smath_capture"
         private const val NOTIFICATION_ID = 4102
 
-        fun stop(context: Context) {
-            runCatching { context.stopService(Intent(context, ScreenCaptureService::class.java)) }
+        /** 录屏授权是否仍然有效；进程重启后自然回到 false。 */
+        @Volatile
+        var armed: Boolean = false
+            private set
+
+        fun arm(context: Context, resultCode: Int, data: Intent) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_ARM
+                putExtra(EXTRA_RESULT_CODE, resultCode)
+                putExtra(EXTRA_RESULT_DATA, data)
+            }
+            runCatching { ContextCompat.startForegroundService(context, intent) }
         }
+
+        fun capture(context: Context) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_CAPTURE
+            }
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+        }
+
+        fun disarm(context: Context) {
+            armed = false
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_DISARM
+            }
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+        }
+
+        fun stop(context: Context) = disarm(context)
     }
 }

@@ -11,7 +11,9 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -34,6 +36,7 @@ class ScreenshotOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var bubble: View? = null
     private var params: WindowManager.LayoutParams? = null
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -58,6 +61,7 @@ class ScreenshotOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         bubble?.let { view ->
             runCatching { windowManager.removeView(view) }
         }
@@ -151,10 +155,24 @@ class ScreenshotOverlayService : Service() {
     }
 
     private fun openCapture() {
-        val intent = Intent(this, ScreenCaptureActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+        // 先把气泡藏起来，避免截进图里；同时这一步会触发屏幕重绘，
+        // 常驻的 MediaProjection 才会送来新的一帧。
+        hideBubbleTemporarily()
+        if (ScreenCaptureService.armed) {
+            ScreenCaptureService.capture(this)
+        } else {
+            val intent = Intent(this, ScreenCaptureActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+            }
+            runCatching { startActivity(intent) }
         }
-        runCatching { startActivity(intent) }
+    }
+
+    private fun hideBubbleTemporarily() {
+        val view = bubble ?: return
+        runCatching { windowManager.removeView(view) }
+        bubble = null
+        handler.postDelayed({ showBubble() }, 1500)
     }
 
     private fun screenSize(): Pair<Int, Int> {

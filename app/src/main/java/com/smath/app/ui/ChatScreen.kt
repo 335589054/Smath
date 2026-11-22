@@ -54,6 +54,7 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Calculate
+import androidx.compose.material.icons.rounded.CallSplit
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Close
@@ -88,6 +89,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -132,6 +134,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.smath.app.data.AgentPreset
 import com.smath.app.data.ApiErrorInfo
+import com.smath.app.data.BranchNode
 import com.smath.app.data.ChatMessage
 import com.smath.app.data.Citation
 import com.smath.app.data.ContextReference
@@ -186,6 +189,9 @@ fun ChatScreen(
     var exporting by remember { mutableStateOf(false) }
     var pendingExportKind by remember { mutableStateOf<String?>(null) }
     var exportTarget by remember { mutableStateOf<Conversation?>(null) }
+    var showBranchGraph by remember { mutableStateOf(false) }
+    var deleteNodeId by remember { mutableStateOf<String?>(null) }
+    val branchModeOn by viewModel.branchMode.collectAsStateWithLifecycle()
 
     LaunchedEffect(externalDraftImage) {
         val path = externalDraftImage
@@ -395,7 +401,7 @@ fun ChatScreen(
         ?: settings.presets.firstOrNull()
     val exportableConversation = active?.takeIf { it.messages.isNotEmpty() && streaming == null }
 
-    val chatMessages = active?.messages.orEmpty()
+    val chatMessages = viewModel.visibleMessages(active)
     val reasoningIds = chatMessages.filter { it.reasoning.isNotBlank() }.map { it.id }
     val streamingHasReasoning = !streaming?.reasoning.isNullOrBlank()
     val hasReasoning = reasoningIds.isNotEmpty() || streamingHasReasoning
@@ -494,7 +500,9 @@ fun ChatScreen(
                                     builtIn = false,
                                     icon = "custom"
                                 )
-                            }
+                            },
+                            branchMode = branchModeOn,
+                            onToggleBranchMode = viewModel::setBranchMode
                         )
                     }
                 }
@@ -563,6 +571,15 @@ fun ChatScreen(
 
             }
 
+        val pendingParents = active?.pendingParentIds.orEmpty()
+        if (pendingParents.isNotEmpty()) {
+            PendingBranchBanner(
+                count = pendingParents.size,
+                onCancel = { viewModel.cancelPendingBranch() },
+                onOpenGraph = { showBranchGraph = true }
+            )
+        }
+
         Composer(
             input = input,
             onInputChange = { input = it },
@@ -572,6 +589,9 @@ fun ChatScreen(
             contexts = draftContexts,
             onRemoveContext = { ref -> draftContexts = draftContexts.filterNot { it.id == ref.id } },
             onAddContext = { showContextSheet = true },
+            branchMode = active?.complexBranching == true,
+            pendingBranchCount = active?.pendingParentIds?.size ?: 0,
+            onOpenGraph = { showBranchGraph = true },
             webSearch = settings.webSearchByDefault,
             onToggleSearch = { viewModel.setWebSearch(it) },
             hasReasoning = hasReasoning,
@@ -601,6 +621,62 @@ fun ChatScreen(
                 }
             },
             onStop = viewModel::stopGenerating
+        )
+    }
+
+    if (showBranchGraph) {
+        val conv = active
+        if (conv != null && conv.complexBranching) {
+            // 待建分支时下方多显示一个“正在编辑”的占位节点。
+            val placeholder = if (conv.pendingParentIds.isNotEmpty()) {
+                val parents = conv.nodes.filter { it.id in conv.pendingParentIds }
+                val parentXs = parents.mapNotNull { it.x }
+                val parentYs = parents.mapNotNull { it.y }
+                BranchNode(
+                    id = "pending-edit-node",
+                    parentIds = conv.pendingParentIds,
+                    question = "正在编辑：等待你的提问",
+                    x = if (parentXs.isEmpty()) 0f else parentXs.average().toFloat(),
+                    y = (parentYs.maxOrNull() ?: 0f) + 126f,
+                    createdAt = Long.MAX_VALUE
+                )
+            } else {
+                null
+            }
+            val nodes = if (placeholder != null) conv.nodes + placeholder else conv.nodes
+            BranchGraphSheet(
+                nodes = nodes,
+                currentNodeId = placeholder?.id ?: conv.currentNodeId,
+                pendingParentIds = conv.pendingParentIds,
+                onDismiss = { showBranchGraph = false },
+                onCreateBranch = { ids -> viewModel.createBranchFromNodes(ids) },
+                onDeleteNode = { id -> deleteNodeId = id },
+                onMoveNode = { id, x, y -> viewModel.moveBranchNode(id, x, y) },
+                onJumpToNode = { id ->
+                    viewModel.jumpToBranchNode(id)
+                    showBranchGraph = false
+                    stickToBottom = true
+                }
+            )
+        }
+    }
+
+    deleteNodeId?.let { id ->
+        val downstream = viewModel.branchDownstreamIds(id)
+        SmathConfirmDialog(
+            title = if (downstream.size > 1) "删除节点及下游？" else "删除节点？",
+            message = if (downstream.size > 1) {
+                "这个节点还有 ${downstream.size - 1} 个下游节点，删除后会一起移除，无法恢复。"
+            } else {
+                "删除后这一轮问答会从对话中移除，无法恢复。"
+            },
+            confirmLabel = "删除",
+            destructive = true,
+            onDismiss = { deleteNodeId = null },
+            onConfirm = {
+                viewModel.deleteBranchNode(id)
+                deleteNodeId = null
+            }
         )
     }
 
@@ -851,7 +927,9 @@ private fun WelcomePane(
     selectedPreset: AgentPreset?,
     onSelectPreset: (String) -> Unit,
     onTunePreset: () -> Unit,
-    onAddPreset: () -> Unit
+    onAddPreset: () -> Unit,
+    branchMode: Boolean = false,
+    onToggleBranchMode: (Boolean) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -951,6 +1029,48 @@ private fun WelcomePane(
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = if (branchMode) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surface,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (branchMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 13.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Rounded.CallSplit,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (branchMode) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(9.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "复杂分支对话",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (branchMode) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "每轮问答成为一个节点，可查看拓扑、对比并合并多条解法",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (branchMode) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = branchMode, onCheckedChange = onToggleBranchMode)
             }
         }
     }
@@ -1585,6 +1705,54 @@ private fun ReasoningBlock(
 }
 
 @Composable
+private fun PendingBranchBanner(count: Int, onCancel: () -> Unit, onOpenGraph: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.CallSplit,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "正在创建新的分支",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    if (count == 1) "从所选节点继续，新回答会成为一个新分支"
+                    else "基于已选 $count 个节点的全部上游内容，合并成一条新分支",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
+                )
+            }
+            TextButton(onClick = onOpenGraph) {
+                Text("查看拓扑", style = MaterialTheme.typography.labelMedium)
+            }
+            IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "取消新建分支",
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun NoticeChip(notice: String) {
     val isFailure = notice.startsWith("联网搜索未完成")
     val isSearch = notice.startsWith("已联网搜索")
@@ -1820,6 +1988,9 @@ private fun Composer(
     contexts: List<ContextReference>,
     onRemoveContext: (ContextReference) -> Unit,
     onAddContext: () -> Unit,
+    branchMode: Boolean = false,
+    pendingBranchCount: Int = 0,
+    onOpenGraph: () -> Unit = {},
     webSearch: Boolean,
     onToggleSearch: (Boolean) -> Unit,
     hasReasoning: Boolean,
@@ -2105,16 +2276,26 @@ private fun Composer(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
-                        onClick = onAddContext,
+                        onClick = if (branchMode) onOpenGraph else onAddContext,
                         modifier = Modifier.size(34.dp)
                     ) {
-                        Text(
-                            "@",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (contexts.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.primary
-                        )
+                        if (branchMode) {
+                            Icon(
+                                Icons.Rounded.CallSplit,
+                                contentDescription = "对话拓扑",
+                                tint = if (pendingBranchCount > 0) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        } else {
+                            Text(
+                                "@",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (contexts.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                     IconButton(
                         onClick = onAddImage,

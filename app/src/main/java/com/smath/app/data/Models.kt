@@ -150,7 +150,9 @@ data class AppSettings(
     val linearAlgebraAgentEnabled: Boolean = false,
     val drawingCanvasSize: Int = 720,
     /** 流式输出时是否自动跟随到底部；关闭后除非用户手动滑到底或点「到底部」，页面不会自己动。 */
-    val autoFollowStreaming: Boolean = true
+    val autoFollowStreaming: Boolean = true,
+    /** 检查更新 / 下载安装包使用的源：official、gh-proxy.com、gh-proxy.org。 */
+    val updateSource: String = "gh-proxy.com"
 ) {
     val thinking: ThinkingLevel get() = thinkingLevel ?: ThinkingLevel.MEDIUM
 }
@@ -202,6 +204,27 @@ data class ChatMessage(
     val contexts: List<ContextReference> get() = contextRefs.orEmpty()
 }
 
+/**
+ * 复杂分支对话里的一个节点 = 一轮问答（用户提问 + AI 回答）。
+ * parentIds 可能有多个，表示这一轮是由多条分支合并出来的。
+ * x/y 为拓扑图里的坐标（dp），为 null 表示还没被拖动过，由自动布局决定。
+ */
+data class BranchNode(
+    val id: String,
+    val parentIds: List<String> = emptyList(),
+    val userMessageId: String = "",
+    val assistantMessageId: String = "",
+    /** 用户问题原文，拓扑图只显示前若干字符，详情里看全文。 */
+    val question: String = "",
+    /** AI 回答原文，供详情查看与上下文重建。 */
+    val answer: String = "",
+    val x: Float? = null,
+    val y: Float? = null,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    val snippet: String get() = question.replace(Regex("\\s+"), " ").trim()
+}
+
 data class Conversation(
     val id: String,
     val title: String = "新对话",
@@ -216,7 +239,14 @@ data class Conversation(
     val stageLabel: String = "",
     val styles: List<String> = emptyList(),
     val folderId: String? = null,
-    val pinned: Boolean = false
+    val pinned: Boolean = false,
+    /** 复杂分支对话：每一轮问答是一个节点，可以选中多个节点合并出新分支。 */
+    val complexBranching: Boolean = false,
+    val nodes: List<BranchNode> = emptyList(),
+    /** 当前正在编辑（也就是对话最末端）的节点。 */
+    val currentNodeId: String? = null,
+    /** 已选定父节点、等待下一条提问开启新分支。 */
+    val pendingParentIds: List<String> = emptyList()
 )
 
 data class ConversationFolder(

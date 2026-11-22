@@ -96,6 +96,8 @@ import com.smath.app.data.ProviderConfig
 import com.smath.app.data.PresetTransfer
 import com.smath.app.agent.LinearAlgebraTool
 import com.smath.app.data.providerKindColor
+import com.smath.app.screenshot.ScreenCaptureActivity
+import com.smath.app.screenshot.ScreenCaptureService
 import com.smath.app.screenshot.ScreenshotOverlayService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -181,6 +183,8 @@ fun SettingsScreen(
         if (Settings.canDrawOverlays(context)) {
             viewModel.setScreenshotEnabled(true)
             ScreenshotOverlayService.start(context)
+            // 打开开关时就把录屏授权要到手，之后点悬浮球不再弹窗。
+            ScreenCaptureActivity.requestArm(context)
         } else {
             viewModel.setScreenshotEnabled(false)
             Toast.makeText(context, "需要“显示在其他应用上层”权限才能使用截屏按钮", Toast.LENGTH_LONG)
@@ -571,7 +575,7 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    "适合平板：开启后在屏幕上显示可拖动的截屏按钮，单击即可截屏并进入裁剪页。",
+                                    "适合平板：开启后在屏幕上显示可拖动的截屏按钮，单击即可截屏并进入裁剪页。开启时会立即请求一次录屏授权，之后点按钮不再弹窗。",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -583,9 +587,11 @@ fun SettingsScreen(
                                     if (!enabled) {
                                         viewModel.setScreenshotEnabled(false)
                                         ScreenshotOverlayService.stop(context)
+                                        ScreenCaptureService.disarm(context)
                                     } else if (Settings.canDrawOverlays(context)) {
                                         viewModel.setScreenshotEnabled(true)
                                         ScreenshotOverlayService.start(context)
+                                        ScreenCaptureActivity.requestArm(context)
                                     } else {
                                         Toast.makeText(
                                             context,
@@ -712,6 +718,23 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+            item { SectionLabel("检查更新") }
+            item {
+                UpdateCard(
+                    currentVersion = remember {
+                        runCatching {
+                            context.packageManager
+                                .getPackageInfo(context.packageName, 0)
+                                .versionName
+                        }.getOrNull() ?: ""
+                    },
+                    source = settings.updateSource,
+                    onSourceChange = viewModel::setUpdateSource,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             item { Spacer(Modifier.height(12.dp)) }
@@ -1593,7 +1616,12 @@ private fun LinalgSampleDialog(dark: Boolean, onDismiss: () -> Unit) {
     val markdown = remember(results) {
         results.joinToString("\n\n") { item ->
             if (item.error.isNullOrBlank()) {
-                "`${item.command}`\n\n\$\$${item.latex}\$\$"
+                val tex = item.latex?.takeIf { it.isNotBlank() }
+                if (tex != null) {
+                    "`${item.command}`\n\n\$\$$tex\$\$"
+                } else {
+                    "`${item.command}`\n\n`${item.plain}`"
+                }
             } else {
                 "`${item.command}`\n\n> ⚠️ ${item.error}"
             }
