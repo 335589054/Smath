@@ -24,6 +24,9 @@ Smath 是一个原生 Android（Kotlin + Jetpack Compose）对话型 AI Agent，
 
 从 [Releases](https://github.com/335589054/Smath/releases) 下载 APK 安装即可，minSdk 26（Android 8.0），targetSdk 35。
 
+当前发布版本 1.5.0：`Smath-1.5.0-release.apk`（12,866,369 字节，SHA-256 `A9C655828BB3353F3558BC64242583B9921B5A96E8F0F88DDE9B89E23864922E`）
+<https://github.com/335589054/Smath/releases/download/v1.5.0/Smath-1.5.0-release.apk>
+
 `dist/` 目录里也保存了各版本产物与 `SHA256SUMS.txt` 校验和。
 
 ## 配置
