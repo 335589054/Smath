@@ -572,10 +572,27 @@ fun ChatScreen(
             }
 
         val pendingParents = active?.pendingParentIds.orEmpty()
+        // 当前停在一个「已经有下游」的节点上：下一条提问会从它分叉出新分支，
+        // 这是分支模式的常态（像 git 在中间某个 commit 上继续），提示条不应提供取消。
+        val branchNodeList = active?.nodes.orEmpty()
+        val currentBranchNodeId = active?.currentNodeId
+        val branchPointIndex = branchNodeList.indexOfFirst { it.id == currentBranchNodeId }
+        val atBranchPoint = active?.complexBranching == true &&
+            currentBranchNodeId != null &&
+            branchPointIndex >= 0 &&
+            branchNodeList.any { it.parentIds.contains(currentBranchNodeId) }
         if (pendingParents.isNotEmpty()) {
             PendingBranchBanner(
                 count = pendingParents.size,
+                nodeLabel = null,
                 onCancel = { viewModel.cancelPendingBranch() },
+                onOpenGraph = { showBranchGraph = true }
+            )
+        } else if (atBranchPoint) {
+            PendingBranchBanner(
+                count = 1,
+                nodeLabel = "#${branchPointIndex + 1}",
+                onCancel = null,
                 onOpenGraph = { showBranchGraph = true }
             )
         }
@@ -1706,7 +1723,12 @@ private fun ReasoningBlock(
 }
 
 @Composable
-private fun PendingBranchBanner(count: Int, onCancel: () -> Unit, onOpenGraph: () -> Unit) {
+private fun PendingBranchBanner(
+    count: Int,
+    nodeLabel: String?,
+    onCancel: (() -> Unit)?,
+    onOpenGraph: () -> Unit
+) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -1727,13 +1749,16 @@ private fun PendingBranchBanner(count: Int, onCancel: () -> Unit, onOpenGraph: (
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "正在创建新的分支",
+                    if (nodeLabel != null) "正在从 $nodeLabel 继续" else "正在创建新的分支",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
-                    if (count == 1) "从所选节点继续，新回答会成为一个新分支"
-                    else "基于已选 $count 个节点的全部上游内容，合并成一条新分支",
+                    when {
+                        nodeLabel != null -> "下一条提问会接在这个节点之后，成为一个新分支"
+                        count == 1 -> "从所选节点继续，新回答会成为一个新分支"
+                        else -> "基于已选 $count 个节点的全部上游内容，合并成一条新分支"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
                 )
@@ -1741,13 +1766,15 @@ private fun PendingBranchBanner(count: Int, onCancel: () -> Unit, onOpenGraph: (
             TextButton(onClick = onOpenGraph) {
                 Text("查看拓扑", style = MaterialTheme.typography.labelMedium)
             }
-            IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
-                Icon(
-                    Icons.Rounded.Close,
-                    contentDescription = "取消新建分支",
-                    modifier = Modifier.size(17.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+            if (onCancel != null) {
+                IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "取消新建分支",
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
             }
         }
     }

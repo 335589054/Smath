@@ -166,19 +166,20 @@ fun BranchGraphSheet(
 
     /** 命中测试：屏幕坐标 → 节点 id（卡片按 zoom 缩放，坐标换算到屏幕空间后比较）。 */
     fun nodeAt(position: Offset): String? {
-        var hit: String? = null
-        nodes.forEach { item ->
-            val x = item.x ?: return@forEach
-            val y = item.y ?: return@forEach
+        // 后画的卡片在上层，倒序命中，保证点到的是眼睛看到的那一张。
+        for (index in nodes.indices.reversed()) {
+            val item = nodes[index]
+            val x = item.x ?: continue
+            val y = item.y ?: continue
             val left = (x * density + pan.x) * zoom
             val top = (y * density + pan.y) * zoom
             val width = NODE_WIDTH_DP * density * zoom
             val height = (nodeHeights[item.id] ?: 0).let {
                 if (it > 0) it.toFloat() else NODE_ESTIMATED_HEIGHT_DP * density
             } * zoom
-            if (position.x in left..(left + width) && position.y in top..(top + height)) hit = item.id
+            if (position.x in left..(left + width) && position.y in top..(top + height)) return item.id
         }
-        return hit
+        return null
     }
 
     /** 多选集合。 */
@@ -236,16 +237,17 @@ fun BranchGraphSheet(
         }
         val centerX = ((minX + maxX) / 2f) * density
         val centerY = ((minY + maxY) / 2f) * density
-        val contentW = (maxX - minX) * density
-        val contentH = (maxY - minY) * density
+        // 边框、阴影和文字会略微溢出节点矩形，留 6% 余量，避免「看起来还是没装下」。
+        val contentW = (maxX - minX) * density * 1.06f
+        val contentH = (maxY - minY) * density * 1.06f
         val margin = 28f
         val availableW = (viewport.width - margin * 2f).coerceAtLeast(1f)
         val availableH = (viewport.height - margin * 2f).coerceAtLeast(1f)
-        // 归位：把整张图缩放到正好装进可视区（最多放大到 1.25 倍，避免两个节点被放得过夸张）。
+        // 归位：把整张图缩放到正好装进可视区；只缩小不放大，免得两三个节点被放得过大。
         val fitted = if (contentW <= 1f || contentH <= 1f) {
-            MAX_ZOOM.coerceAtMost(1.25f)
+            1f
         } else {
-            min(availableW / contentW, availableH / contentH).coerceIn(MIN_ZOOM, 1.25f)
+            min(availableW / contentW, availableH / contentH).coerceIn(MIN_ZOOM, 1f)
         }
         zoom = fitted
         // 内容坐标 → 屏幕：(content + pan) * zoom，所以要居中就是把内容中心移到可视区中心。
@@ -338,7 +340,10 @@ fun BranchGraphSheet(
                     .clip(RoundedCornerShape(14.dp))
                     .background(variantColor.copy(alpha = 0.45f))
                     .onSizeChanged { viewport = it }
-                    .pointerInput(Unit) {
+                    // 注意：必须把 nodes / panLimitPx 作为 key。pointerInput 的 lambda 只记忆一次，
+                    // 若用 pointerInput(Unit)，里面捕获的 nodes 会永远停在首次组合时的那份（x/y 可能还是 null），
+                    // 表现为「点不中、拖不动」。
+                    .pointerInput(nodes, panLimitPx) {
                         // 画布级统一处理：命中节点就拖节点（绝对跟踪，完全跟手），否则平移；双指缩放。
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -352,12 +357,12 @@ fun BranchGraphSheet(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 if (event.changes.size > 1) {
-                                    val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
-                                    zoom = (startZoom * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                    // calculateZoom/calculatePan 给的是「相对上一次事件」的增量，
+                                    // 必须累加；用 startZoom 相乘会让每一帧都回到起点附近，表现为回弹。
+                                    zoom = (zoom * event.calculateZoom()).coerceIn(MIN_ZOOM, MAX_ZOOM)
                                     pan = Offset(
-                                        (startPan.x + panChange.x).coerceIn(-panLimitPx, panLimitPx),
-                                        (startPan.y + panChange.y).coerceIn(-panLimitPx, panLimitPx)
+                                        (pan.x + event.calculatePan().x).coerceIn(-panLimitPx, panLimitPx),
+                                        (pan.y + event.calculatePan().y).coerceIn(-panLimitPx, panLimitPx)
                                     )
                                     event.changes.forEach { it.consume() }
                                     moved = true
@@ -559,8 +564,8 @@ fun BranchGraphSheet(
             ) {
                 Text(
                     text = when {
-                        selected.isEmpty() -> "点节点选中 · 选 1 个新建分支，选多个合并建分支"
-                        selected.size == 1 -> "已选 1 个节点，可从这里新建分支"
+                        selected.isEmpty() -> "点节点选中 · 选 1 个新建分支或跳转，选多个合并建分支"
+                        selected.size == 1 -> "已选 1 个节点，可跳转或从这里新建分支"
                         else -> "已选 ${selected.size} 个节点，将合并上游上下文"
                     },
                     style = MaterialTheme.typography.labelMedium,
@@ -570,13 +575,26 @@ fun BranchGraphSheet(
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedButton(
+                    onClick = {
+                        selected.firstOrNull()?.let { onJumpToNode(it) }
+                        selected = emptySet()
+                        onDismiss()
+                    },
+                    enabled = selected.size == 1,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Text(text = "跳转", fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
                     onClick = { selected.firstOrNull()?.let { onDeleteNode(it) } },
                     enabled = selected.size == 1,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                     modifier = Modifier.height(36.dp)
                 ) {
                     Text(
-                        text = "删除节点",
+                        text = "删除",
                         fontSize = 12.sp,
                         color = if (selected.size == 1) {
                             MaterialTheme.colorScheme.error
