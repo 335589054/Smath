@@ -88,7 +88,8 @@ fun SpecialAgentContent(
     streaming: Boolean,
     modifier: Modifier = Modifier,
     heightKey: String? = null,
-    heights: MutableMap<String, Int>? = null
+    heights: MutableMap<String, Int>? = null,
+    onSegmentHeight: ((String, Int) -> Unit)? = null
 ) {
     // 把渲染高度缓存下来：LazyColumn 回收条目后重新组合时直接用已知高度，
     // 避免 WebView 先以 20dp 出现再长高导致的滚动跳变。
@@ -98,9 +99,12 @@ fun SpecialAgentContent(
     }
 
     fun record(key: String): (Int) -> Unit {
-        if (heights == null || heightKey == null) return {}
-        val full = heightKey + "#" + key
-        return { value: Int -> heights[full] = value }
+        val full = if (heightKey == null) null else heightKey + "#" + key
+        if (full == null) return {}
+        return { value: Int ->
+            heights?.set(full, value)
+            onSegmentHeight?.invoke(full, value)
+        }
     }
 
     // 绘图/计算器的开关只决定是否向模型注入协议提示词；

@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -98,6 +99,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -342,7 +344,9 @@ fun ChatScreen(
         } else {
             // Markdown / KaTeX 的 WebView 高度是异步长出来的：只对齐一次会停在半途，
             // 所以打开会话后的一小段时间内反复贴底，等高度稳定。
+            // 但只要用户开始动手滑动就立刻收手，绝不能再抢滚动。
             repeat(10) {
+                if (!stickToBottom || userScrolling) return@LaunchedEffect
                 pinToBottom()
                 withFrameNanos { }
                 delay(90)
@@ -353,6 +357,7 @@ fun ChatScreen(
     LaunchedEffect(streaming == null, active?.id) {
         if (streaming == null && stickToBottom) {
             repeat(6) {
+                if (!stickToBottom || userScrolling) return@LaunchedEffect
                 pinToBottom()
                 delay(80)
             }
@@ -394,6 +399,19 @@ fun ChatScreen(
             if (!settings.autoFollowStreaming && streaming != null) return@collect
             withFrameNanos { }
             pinToBottom()
+        }
+    }
+
+    // 视口上方条目的高度稳定后，按差值把滚动位置补回去，
+    // 这样上面长高/缩短都不会把用户正在看的内容推走。
+    var anchorCompensation by remember(active?.id) { mutableFloatStateOf(0f) }
+    LaunchedEffect(listState) {
+        snapshotFlow { anchorCompensation }.collect { delta ->
+            if (delta == 0f) return@collect
+            anchorCompensation = 0f
+            if (delta > 0f && listState.canScrollBackward || delta < 0f && listState.canScrollForward) {
+                listState.scrollBy(delta)
+            }
         }
     }
 
@@ -515,7 +533,7 @@ fun ChatScreen(
                         )
                     }
                 }
-                items(chatMessages, key = { it.id }) { message ->
+                itemsIndexed(chatMessages, key = { _, message -> message.id }) { index, message ->
                     if (message.isUser) {
                         val isLastUser = chatMessages.lastOrNull { it.role == "user" }?.id == message.id
                         UserMessage(
@@ -540,6 +558,19 @@ fun ChatScreen(
                             drawingCanvasSize = settings.drawingCanvasSize,
                             heightKey = message.id,
                             heights = markdownHeights,
+                            onSegmentHeight = { key, value ->
+                                val old = markdownHeights[key] ?: 0
+                                if (old != value) {
+                                    val delta = value - old
+                                    markdownHeights[key] = value
+                                    // 只有「在这条消息整体位于视口上方」时才补偿，
+                                    // 否则会把正在看的位置推走（比如最后一条在流式长高）。
+                                    val above = index < listState.firstVisibleItemIndex
+                                    if (above && !stickToBottom && !userScrolling && delta != 0) {
+                                        anchorCompensation += delta
+                                    }
+                                }
+                            },
                             canRetry = isLast && message.error != null,
                             onRetry = viewModel::retryLast,
                             canRegenerate = isLast && streaming == null,
@@ -1335,6 +1366,7 @@ private fun AssistantMessage(
     drawingCanvasSize: Int,
     heightKey: String? = null,
     heights: MutableMap<String, Int>? = null,
+    onSegmentHeight: ((String, Int) -> Unit)? = null,
     canRetry: Boolean,
     onRetry: () -> Unit,
     canRegenerate: Boolean = false,
@@ -1362,7 +1394,8 @@ private fun AssistantMessage(
                     streaming = false,
                     modifier = Modifier.fillMaxWidth(),
                     heightKey = heightKey,
-                    heights = heights
+                    heights = heights,
+                    onSegmentHeight = onSegmentHeight
                 )
             }
             if (message.citations.isNotEmpty()) {
