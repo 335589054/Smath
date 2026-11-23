@@ -132,6 +132,11 @@
             background: rgba(128, 138, 160, 0.45);
             border-radius: 3px;
         }
+        /* 兜底：万一还有 \tag 漏过改写，也不要绝对定位压到公式上。 */
+        .katex-display .tag {
+            position: static !important;
+            margin-left: 1.2em;
+        }
         .katex-error { color: #d9485f; }
         .task-list-item { list-style: none; margin-left: -18px; }
         .footnotes { font-size: 13px; color: var(--muted); }
@@ -241,6 +246,20 @@
         // Markdown turns raw line breaks inside a $$...$$ block into <br>, which
         // breaks KaTeX. Pull formulas out first, then put them back after the
         // Markdown has been parsed and sanitized.
+        // 把 \tag{1} / \tag*{1} 改写成公式内部的编号，避免 KaTeX 的绝对定位
+        // 编号压到公式尾巴上。
+        function rewriteTags(body) {
+            if (body.indexOf('\\tag') === -1) return body;
+            // \tag{1} 在 KaTeX 里会显示成 (1)，\tag*{1} 显示成 1；这里保留这个观感，
+            // 但把它变成公式内部的普通内容，避免绝对定位压字。
+            return body.replace(/\\tag(\*?)\s*\{([^{}]*)\}/g, function (_, star, inner) {
+                var label = inner.trim();
+                if (!label) return '';
+                var text = star ? label : '(' + label + ')';
+                return '\\qquad\\text{' + text + '}';
+            });
+        }
+
         function protectMath(text) {
             var store = [];
             var pattern = /```[\s\S]*?```|`[^`\n]*`|\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^$\n]+?\$|\\\([\s\S]*?\\\)/g;
@@ -266,6 +285,10 @@
                 // 引用标记如果留在公式体内，KaTeX 会把它们当成大于号显示，
                 // 截图里的 "> u-v | ... >" 就是这样产生的。
                 body = body.replace(/^[ \t]*>[ \t]?/gm, '');
+                // KaTeX 的 \tag{1} 是把编号绝对定位到右侧的，容器一窄就会
+                // 压到公式尾巴上（截图里 "= (1)" 叠在一起就是这样）。
+                // 这里把它改写成公式内的 (1)，随公式一起排布、一起横向滚动。
+                body = rewriteTags(body);
                 if (!body.trim()) return match;
                 var token = 'SMATHPLACE' + store.length + 'X';
                 store.push({ body: body, display: display });
