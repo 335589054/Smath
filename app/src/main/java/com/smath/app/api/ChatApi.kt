@@ -52,9 +52,11 @@ class ChatApi {
         systemPrompt: String,
         messages: List<ChatMessage>,
         thinkingLevel: ThinkingLevel = ThinkingLevel.MEDIUM,
+        imageCompression: Boolean = true,
         onReasoning: (String) -> Unit = {},
         onContent: (String) -> Unit = {},
         onCitations: (List<Citation>) -> Unit = {},
+        onUsage: (Long, Long, Long) -> Unit = { _, _, _ -> },
         onFinish: (String?) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
         if (provider.apiKey.isBlank()) {
@@ -68,7 +70,7 @@ class ChatApi {
                 )
             )
         }
-        val body = buildRequestBody(provider, model, systemPrompt, messages, thinkingLevel)
+        val body = buildRequestBody(provider, model, systemPrompt, messages, thinkingLevel, imageCompression)
         val request = Request.Builder()
             .url(chatEndpoint(provider.baseUrl))
             .header("Authorization", "Bearer ${provider.apiKey.trim()}")
@@ -118,6 +120,17 @@ class ChatApi {
                 }
                 obj.arrayOrNull("annotations")?.let { array ->
                     collectCitations(array, citationBuffer) { onCitations(citationBuffer.values.toList()) }
+                }
+                obj.objectOrNull("usage")?.let { usage ->
+                    val prompt = usage.longOrNull("prompt_tokens") ?: 0L
+                    val completion = usage.longOrNull("completion_tokens") ?: 0L
+                    val cached = usage.objectOrNull("prompt_tokens_details")
+                        ?.longOrNull("cached_tokens")
+                        ?: usage.longOrNull("prompt_cache_hit_tokens")
+                        ?: 0L
+                    if (prompt > 0 || completion > 0) {
+                        onUsage(prompt, completion, cached)
+                    }
                 }
                 val choices = obj.arrayOrNull("choices") ?: continue
                 if (choices.size() == 0) continue
@@ -329,11 +342,14 @@ class ChatApi {
         model: String,
         systemPrompt: String,
         messages: List<ChatMessage>,
-        thinkingLevel: ThinkingLevel
+        thinkingLevel: ThinkingLevel,
+        imageCompression: Boolean = true
     ): String {
         val root = JsonObject()
         root.addProperty("model", model)
         root.addProperty("stream", true)
+        // 让 OpenAI 兼容服务在流末尾附带 token 用量，用于本地统计。
+        root.add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
         applyThinking(root, provider, model, thinkingLevel)
         // 不显式设置 max_tokens：不同 OpenAI 兼容服务商对参数名支持不一致
         // （例如部分推理模型只接受 max_completion_tokens）。长度的兜底交给
@@ -360,7 +376,12 @@ class ChatApi {
                     )
                 })
                 message.imagePaths.forEach { path ->
-                    val dataUrl = ImageUtils.toDataUrl(path)
+                    // 开启图片压缩时把长边压到 1024、质量 70，可显著减少图片 token。
+                    val dataUrl = if (imageCompression) {
+                        ImageUtils.toDataUrl(path, 1024, 70)
+                    } else {
+                        ImageUtils.toDataUrl(path, 1600, 88)
+                    }
                     if (dataUrl != null) {
                         content.add(JsonObject().apply {
                             addProperty("type", "image_url")
@@ -515,6 +536,18 @@ class ChatApi {
     private fun JsonObject.arrayOrNull(key: String): JsonArray? {
         val element = get(key) ?: return null
         return if (element.isJsonArray) element.asJsonArray else null
+    }
+
+    /** 取对象字段；字段是 null、缺失或不是对象时返回 null（不少服务商会发 "usage": null）。 */
+    private fun JsonObject.objectOrNull(key: String): JsonObject? {
+        val element = get(key) ?: return null
+        return if (element.isJsonObject) element.asJsonObject else null
+    }
+
+    private fun JsonObject.longOrNull(key: String): Long? {
+        val element = get(key) ?: return null
+        if (!element.isJsonPrimitive) return null
+        return runCatching { element.asLong }.getOrNull()
     }
 
     private fun JsonObject.contentText(): String? {

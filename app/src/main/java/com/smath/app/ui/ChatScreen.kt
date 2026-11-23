@@ -133,6 +133,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.smath.app.data.AgentPreset
+import com.smath.app.data.contextWindowFor
 import com.smath.app.data.ApiErrorInfo
 import com.smath.app.data.BranchNode
 import com.smath.app.data.ChatMessage
@@ -415,6 +416,14 @@ fun ChatScreen(
     }
     val canJump = chatMessages.isNotEmpty()
 
+    // 输入框下方的用量读数：优先用本轮实时用量，其次用会话里保存的最近一次。
+    val liveUsage by viewModel.liveUsage.collectAsStateWithLifecycle()
+    // 已渲染过的高度缓存，避免条目回收后重新量高造成滚动跳变。
+    val markdownHeights = remember(active?.id) { mutableStateMapOf<String, Int>() }
+    val livePrompt = liveUsage?.getOrNull(0) ?: 0L
+    val usagePrompt = if (livePrompt > 0) livePrompt else (active?.lastPromptTokens ?: 0L)
+    val usageCached = if (livePrompt > 0) (liveUsage?.getOrNull(2) ?: 0L) else (active?.lastCachedTokens ?: 0L)
+
     fun jumpToMessage(index: Int) {
         if (index < 0) return
         stickToBottom = false
@@ -529,6 +538,8 @@ fun ChatScreen(
                                     !(thinkingStates[message.id] ?: false)
                             },
                             drawingCanvasSize = settings.drawingCanvasSize,
+                            heightKey = message.id,
+                            heights = markdownHeights,
                             canRetry = isLast && message.error != null,
                             onRetry = viewModel::retryLast,
                             canRegenerate = isLast && streaming == null,
@@ -626,6 +637,10 @@ fun ChatScreen(
                 scope.launch { pinToBottom() }
             },
             generating = streaming != null,
+            contextTokens = usagePrompt,
+            contextWindow = if (active == null) 0L else contextWindowFor(settings.activeModel),
+            cacheRate = if (usagePrompt <= 0) 0f
+            else (usageCached.toFloat() / usagePrompt).coerceIn(0f, 1f),
             onSend = {
                 val text = input
                 val images = draftImages
@@ -1318,6 +1333,8 @@ private fun AssistantMessage(
     thinkingExpanded: Boolean,
     onToggleThinking: () -> Unit,
     drawingCanvasSize: Int,
+    heightKey: String? = null,
+    heights: MutableMap<String, Int>? = null,
     canRetry: Boolean,
     onRetry: () -> Unit,
     canRegenerate: Boolean = false,
@@ -1343,7 +1360,9 @@ private fun AssistantMessage(
                     dark = dark,
                     drawingCanvasSize = drawingCanvasSize,
                     streaming = false,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    heightKey = heightKey,
+                    heights = heights
                 )
             }
             if (message.citations.isNotEmpty()) {
@@ -2038,6 +2057,9 @@ private fun Composer(
     canJumpBottom: Boolean,
     onJumpBottom: () -> Unit,
     generating: Boolean,
+    contextTokens: Long = 0,
+    contextWindow: Long = 0,
+    cacheRate: Float = 0f,
     onSend: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -2413,6 +2435,33 @@ private fun Composer(
                 }
             }
         }
+
+        if (contextWindow > 0) {
+            Spacer(Modifier.height(5.dp))
+            val percent = if (contextWindow <= 0) 0f
+            else (contextTokens.toFloat() / contextWindow).coerceIn(0f, 1f)
+            val tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "上下文 " + compactTokens(contextTokens) + " / " +
+                        compactTokens(contextWindow) + " · " + percentText(percent),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = if (contextTokens <= 0) "缓存命中 —"
+                    else "缓存命中 " + percentText(cacheRate),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint
+                )
+            }
+        }
     }
 }
 
@@ -2463,6 +2512,27 @@ private fun PresetChip(
         }
     }
 }
+
+/** 用量读数的紧凑写法：1.0 M / 12.3 K / 987。 */
+private fun compactTokens(value: Long): String = when {
+    value <= 0 -> "0"
+    value >= 1_000_000 -> trimZero(value / 1_000_000.0) + " M"
+    value >= 1_000 -> trimZero(value / 1_000.0) + " K"
+    else -> value.toString()
+}
+
+/** 百分比文本：0.3% / 74%。 */
+private fun percentText(ratio: Float): String {
+    val percent = (ratio.coerceIn(0f, 1f) * 100f).toDouble()
+    return if (percent >= 10 || percent == 0.0) {
+        "${percent.toInt()}%"
+    } else {
+        String.format(java.util.Locale.CHINA, "%.1f%%", percent)
+    }
+}
+
+private fun trimZero(value: Double): String =
+    String.format(java.util.Locale.CHINA, if (value >= 100) "%.0f" else "%.1f", value)
 
 private fun presetIcon(preset: AgentPreset): ImageVector = when (preset.icon) {
     "math" -> Icons.Rounded.Calculate

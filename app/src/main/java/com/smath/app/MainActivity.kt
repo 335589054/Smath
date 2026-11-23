@@ -14,6 +14,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SmathAppContext.attach(this)
         enableEdgeToEdge()
         incomingCropPath = intent?.getStringExtra(EXTRA_CROP_PATH)
         setContent {

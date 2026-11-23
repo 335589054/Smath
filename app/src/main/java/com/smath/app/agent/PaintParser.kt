@@ -18,6 +18,16 @@ sealed interface PaintCommand {
         val y2: Double
     ) : PaintCommand
     data class Point(val x: Double, val y: Double) : PaintCommand
+    /** 参数方程：x = f(t), y = g(t)，t ∈ [tStart, tEnd]，采样 samples 个点。 */
+    data class Parametric(
+        val xExpression: String,
+        val yExpression: String,
+        val tStart: Double,
+        val tEnd: Double,
+        val samples: Int,
+        val axisId: Int,
+        val scale: Double
+    ) : PaintCommand
     data class Color(val red: Int, val green: Int, val blue: Int) : PaintCommand
     data class StrokeWidth(val width: Double) : PaintCommand
     data class Text(
@@ -159,6 +169,63 @@ fun parsePaint(
                             scale = axes[axisId].first
                         )
                     }
+                    "param", "parametric", "curve" -> {
+                        if (args.size !in 5..6) {
+                            fail(statement, "param 需要 \"x(t)\",\"y(t)\",t0,t1,采样数[,axisId]")
+                            return@forEach
+                        }
+                        val xExpr = paramExpression(unquote(args[0]))
+                        val yExpr = paramExpression(unquote(args[1]))
+                        if (xExpr.isEmpty() || yExpr.isEmpty()) {
+                            fail(statement, "参数方程的 x(t)、y(t) 都不能为空")
+                            return@forEach
+                        }
+                        val t0 = args[2].toDoubleOrNull()
+                        val t1 = args[3].toDoubleOrNull()
+                        val rawSamples = args[4].toDoubleOrNull()
+                        if (t0 == null || t1 == null || rawSamples == null ||
+                            !t0.isFinite() || !t1.isFinite() || !rawSamples.isFinite()
+                        ) {
+                            fail(statement, "param 的 t0、t1、采样数必须是有限数字")
+                            return@forEach
+                        }
+                        if (t1 <= t0) {
+                            fail(statement, "param 要求 t1 > t0")
+                            return@forEach
+                        }
+                        if (t1 - t0 > PARAM_MAX_SPAN) {
+                            fail(statement, "参数区间太长（最多 $PARAM_MAX_SPAN），请缩小 t 的范围")
+                            return@forEach
+                        }
+                        val axisId = if (args.size == 6) {
+                            args[5].toDoubleOrNull()?.toInt()
+                                ?: run {
+                                    fail(statement, "axisId 必须是整数")
+                                    return@forEach
+                                }
+                        } else {
+                            currentAxisId
+                        }
+                        if (axisId !in axes.indices) {
+                            fail(statement, "axisId $axisId 不存在")
+                            return@forEach
+                        }
+                        val samples = rawSamples.toInt().coerceIn(PARAM_MIN_SAMPLES, PARAM_MAX_SAMPLES)
+                        val reject = paramRejection(xExpr, yExpr, t0, t1)
+                        if (reject != null) {
+                            fail(statement, reject)
+                            return@forEach
+                        }
+                        commands += PaintCommand.Parametric(
+                            xExpression = xExpr,
+                            yExpression = yExpr,
+                            tStart = t0,
+                            tEnd = t1,
+                            samples = samples,
+                            axisId = axisId,
+                            scale = axes[axisId].first
+                        )
+                    }
                     "line" -> {
                         if (args.size != 4) {
                             fail(statement, "line 需要 x1,y1,x2,y2")
@@ -230,6 +297,54 @@ fun parsePaint(
 }
 
 private data class Statement(val text: String, val start: Int)
+
+internal const val PARAM_MIN_SAMPLES = 40
+internal const val PARAM_MAX_SAMPLES = 3000
+private const val PARAM_MAX_SPAN = 4000.0
+private const val PARAM_MAX_CHARS = 180
+private const val PARAM_MAX_OPERATORS = 60
+
+/** 参数方程里的自变量统一写成 t，求值时映射到 evalMath 认识的 x。 */
+private val paramVariableRegex = Regex("(?<![A-Za-z0-9_.])[tT](?![A-Za-z0-9_])")
+
+internal fun paramExpression(raw: String): String =
+    paramVariableRegex.replace(raw.trim(), "x").trim()
+
+/**
+ * 拒绝画不出来的参数方程：太长、运算符过多、语法错误、区间里取不到实数点。
+ * 返回 null 表示可绘制。
+ */
+internal fun paramRejection(xExpr: String, yExpr: String, t0: Double, t1: Double): String? {
+    if (xExpr.length + yExpr.length > PARAM_MAX_CHARS) {
+        return "参数方程太长了（x、y 合计最多 $PARAM_MAX_CHARS 个字符），请简化表达式"
+    }
+    val operators = xExpr.count { it in "+-*/^" } + yExpr.count { it in "+-*/^" }
+    if (operators > PARAM_MAX_OPERATORS) {
+        return "参数方程过于复杂（运算超过 $PARAM_MAX_OPERATORS 个），请拆成更简单的形式"
+    }
+    var finite = 0
+    var lastSyntax: String? = null
+    for (index in 0..4) {
+        val t = t0 + (t1 - t0) * (index / 4.0)
+        val x = runCatching { evalMath(xExpr, t) }
+        val y = runCatching { evalMath(yExpr, t) }
+        val xErr = x.exceptionOrNull()
+        val yErr = y.exceptionOrNull()
+        if (xErr is MathEvalException && xErr.position >= 0) lastSyntax = xErr.message
+        if (yErr is MathEvalException && yErr.position >= 0) lastSyntax = yErr.message
+        val xv = x.getOrNull()
+        val yv = y.getOrNull()
+        if (xv != null && yv != null && xv.isReal() && yv.isReal() &&
+            xv.re.isFinite() && yv.re.isFinite() &&
+            kotlin.math.abs(xv.re) < 100_000.0 && kotlin.math.abs(yv.re) < 100_000.0
+        ) {
+            finite++
+        }
+    }
+    if (lastSyntax != null) return "参数方程表达式无效：$lastSyntax"
+    if (finite < 2) return "参数方程在这个区间里几乎取不到实数点，请换一个区间或换一种写法"
+    return null
+}
 
 /** Replaces comments with spaces while preserving newlines, so positions stay meaningful. */
 private fun stripComments(source: String): String {

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.smath.app.SmathAppContext
 import com.smath.app.agent.ToolRunner
 import com.smath.app.api.ApiCallException
 import com.smath.app.api.ApiErrorCatalog
@@ -26,8 +27,10 @@ import com.smath.app.data.BASE_AGENT_PROMPT
 import com.smath.app.data.ProviderConfig
 import com.smath.app.data.Stage
 import com.smath.app.data.ThinkingLevel
+import com.smath.app.data.TokenUsage
 import com.smath.app.data.buildSystemPrompt
 import com.smath.app.data.defaultSettings
+import com.smath.app.service.GenerationService
 import com.smath.app.util.TimeUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -177,9 +180,62 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val _liveUsage = MutableStateFlow<LongArray?>(null)
+
+    /** 本轮请求的 (输入, 输出, 命中缓存) token，用于输入框下方实时显示。 */
+    val liveUsage: StateFlow<LongArray?> = _liveUsage
+
     /** 检查更新 / 下载的源：official、gh-proxy.com、gh-proxy.org。 */
     fun setUpdateSource(source: String) {
         updateData { it.copy(settings = it.settings.copy(updateSource = source)) }
+    }
+
+    /** 发送图片前是否压缩（省 token）。 */
+    fun setImageCompressionEnabled(enabled: Boolean) {
+        updateData { it.copy(settings = it.settings.copy(imageCompressionEnabled = enabled)) }
+    }
+
+    fun clearTokenUsage() {
+        updateData { it.copy(usage = emptyList()) }
+        _events.tryEmit("已清空用量统计")
+    }
+
+    /** 按「服务商 + 模型」累加 token 用量。 */
+    private fun recordTokenUsage(
+        provider: ProviderConfig,
+        model: String,
+        promptTokens: Long,
+        completionTokens: Long,
+        cachedTokens: Long
+    ) {
+        if (promptTokens <= 0 && completionTokens <= 0) return
+        val now = System.currentTimeMillis()
+        updateData { data ->
+            val existing = data.usage.firstOrNull { it.providerId == provider.id && it.model == model }
+            val merged = if (existing == null) {
+                TokenUsage(
+                    providerId = provider.id,
+                    providerName = provider.name,
+                    model = model,
+                    promptTokens = promptTokens,
+                    completionTokens = completionTokens,
+                    cachedTokens = cachedTokens,
+                    requests = 1,
+                    lastAt = now
+                )
+            } else {
+                existing.copy(
+                    providerName = provider.name,
+                    promptTokens = existing.promptTokens + promptTokens,
+                    completionTokens = existing.completionTokens + completionTokens,
+                    cachedTokens = existing.cachedTokens + cachedTokens,
+                    requests = existing.requests + 1,
+                    lastAt = now
+                )
+            }
+            val rest = data.usage.filterNot { it.providerId == provider.id && it.model == model }
+            data.copy(usage = (rest + merged).sortedByDescending { it.totalTokens })
+        }
     }
 
     fun selectPreset(id: String) {
@@ -346,8 +402,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val token = generationToken
         val messageId = UUID.randomUUID().toString()
         val startedAt = SystemClock.elapsedRealtime()
+        _liveUsage.value = null
 
         generationJob = viewModelScope.launch {
+            SmathAppContext.get()?.let { GenerationService.start(it, conversation.title) }
             val content = StringBuilder()
             val reasoning = StringBuilder()
             var lastPublish = 0L
@@ -447,6 +505,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 var toolRounds = 0
                 var toolCalls = 0
                 var executedUpTo = 0
+                var lastPromptTokens = 0L
+                var lastCompletionTokens = 0L
+                var lastCachedTokens = 0L
                 while (true) {
                     continuation = 0
                     // 内层循环处理“输出被长度上限截断后自动续写”。
@@ -474,6 +535,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             systemPrompt = system,
                             messages = requestHistory,
                             thinkingLevel = settings.thinking,
+                            imageCompression = settings.imageCompressionEnabled,
                             onReasoning = { chunk ->
                                 if (token == generationToken) {
                                     reasoning.append(chunk)
@@ -492,6 +554,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 if (token == generationToken) {
                                     citations = (citations + list).distinctBy { it.url }
                                     publish(true)
+                                }
+                            },
+                            onUsage = { prompt, completion, cached ->
+                                if (token == generationToken) {
+                                    lastPromptTokens = prompt
+                                    lastCompletionTokens = completion
+                                    lastCachedTokens = cached
+                                    _liveUsage.value = longArrayOf(prompt, completion, cached)
+                                    recordTokenUsage(provider, model, prompt, completion, cached)
                                 }
                             },
                             onFinish = { reason -> finishReason = reason }
@@ -573,6 +644,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantText = finalContent
                     )
                 }
+                if (token == generationToken && lastPromptTokens > 0) {
+                    updateConversation(conversationId) {
+                        it.copy(
+                            lastPromptTokens = lastPromptTokens,
+                            lastCachedTokens = lastCachedTokens,
+                            lastCompletionTokens = lastCompletionTokens
+                        )
+                    }
+                }
             } catch (e: CancellationException) {
                 withContext(NonCancellable) {
                     if (token == generationToken) {
@@ -634,6 +714,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (token == generationToken) {
                     _streaming.value = null
                     generationJob = null
+                    SmathAppContext.get()?.let { GenerationService.stop(it) }
                 }
             }
         }

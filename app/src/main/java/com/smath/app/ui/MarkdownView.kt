@@ -37,10 +37,13 @@ fun MarkdownView(
     markdown: String,
     dark: Boolean,
     modifier: Modifier = Modifier,
-    fontSizeSp: Float? = null
+    fontSizeSp: Float? = null,
+    cachedHeightPx: Int = 0,
+    onHeightMeasured: ((Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var heightPx by remember { mutableIntStateOf(0) }
+    // 首帧就用已知高度，避免 LazyColumn 里条目被回收后重新量高导致的滚动跳变。
+    var heightPx by remember { mutableIntStateOf(cachedHeightPx) }
     var ready by remember { mutableStateOf(false) }
     val webViewRef = remember { arrayOfNulls<WebView>(1) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
@@ -53,6 +56,7 @@ fun MarkdownView(
                 if (value > 0) {
                     mainHandler.post {
                         heightPx = value
+                        onHeightMeasured?.invoke(value)
                     }
                 }
             }

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.Calculate
+import androidx.compose.material.icons.rounded.DataUsage
 import androidx.compose.material.icons.rounded.Functions
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.SettingsBrightness
@@ -94,6 +96,7 @@ import com.smath.app.data.BASE_AGENT_PROMPT
 import com.smath.app.data.ListMode
 import com.smath.app.data.ProviderConfig
 import com.smath.app.data.PresetTransfer
+import com.smath.app.data.TokenUsage
 import com.smath.app.agent.LinearAlgebraTool
 import com.smath.app.data.providerKindColor
 import com.smath.app.screenshot.ScreenCaptureActivity
@@ -122,6 +125,7 @@ fun SettingsScreen(
     var presetTransferBusy by remember { mutableStateOf(false) }
     var pendingPresetExport by remember { mutableStateOf<List<AgentPreset>>(emptyList()) }
     var showLinalgSample by remember { mutableStateOf(false) }
+    var confirmingClearUsage by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -653,6 +657,35 @@ fun SettingsScreen(
                                 onCheckedChange = viewModel::setAutoFollowStreaming
                             )
                         }
+                        Spacer(Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.PhotoSizeSelectLarge,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "压缩图片后再上传",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "开启后把图片长边压到 1024、质量 70 再发送，明显减少图片 token；关闭则保留更多细节，消耗更大。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.imageCompressionEnabled,
+                                onCheckedChange = viewModel::setImageCompressionEnabled
+                            )
+                        }
                     }
                 }
             }
@@ -717,6 +750,28 @@ fun SettingsScreen(
                             )
                         }
                     }
+                }
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+            item { SectionLabel("Token 消耗") }
+            item {
+                TokenUsageCard(usage = data.usage, onClear = { confirmingClearUsage = true })
+            }
+
+            item {
+                if (confirmingClearUsage) {
+                    SmathConfirmDialog(
+                        title = "清空用量统计？",
+                        message = "会把所有服务商与模型的累计 token、缓存命中记录一起清零，无法恢复。",
+                        confirmLabel = "清空",
+                        destructive = true,
+                        onDismiss = { confirmingClearUsage = false },
+                        onConfirm = {
+                            confirmingClearUsage = false
+                            viewModel.clearTokenUsage()
+                        }
+                    )
                 }
             }
 
@@ -1637,5 +1692,91 @@ private fun LinalgSampleDialog(dark: Boolean, onDismiss: () -> Unit) {
         }
     ) {
         MarkdownView(markdown = markdown, dark = dark)
+    }
+}
+
+/** 把 token 数换成「M」为单位的展示文本。 */
+internal fun formatTokensM(value: Long): String {
+    if (value <= 0) return "0"
+    val millions = value / 1_000_000.0
+    return when {
+        millions >= 100 -> "${"%.0f".format(millions)} M"
+        millions >= 1 -> "${"%.2f".format(millions)} M"
+        millions >= 0.01 -> "${"%.3f".format(millions)} M"
+        else -> "<0.01 M"
+    }
+}
+
+@Composable
+private fun TokenUsageCard(usage: List<TokenUsage>, onClear: () -> Unit) {
+    val total = usage.sumOf { it.totalTokens }
+    val totalPrompt = usage.sumOf { it.promptTokens }
+    val totalCached = usage.sumOf { it.cachedTokens }
+    val totalRequests = usage.sumOf { it.requests }
+    val overallRate = if (totalPrompt <= 0) 0f else (totalCached.toFloat() / totalPrompt).coerceIn(0f, 1f)
+    SettingsCard {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.DataUsage,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "累计 ${formatTokensM(total)} token",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (usage.isEmpty()) {
+                            "还没有统计数据，发起一次对话后自动记录。"
+                        } else {
+                            "输入 ${formatTokensM(totalPrompt)} · 缓存命中 ${"%.0f".format(overallRate * 100)}% · ${totalRequests} 次请求"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (usage.isNotEmpty()) {
+                    TextButton(onClick = onClear) { Text("清空") }
+                }
+            }
+            if (usage.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                usage.forEach { item ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                item.providerName.ifBlank { item.providerId },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                item.model.ifBlank { "未指定模型" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                formatTokensM(item.totalTokens),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "输入 ${formatTokensM(item.promptTokens)} · 输出 ${formatTokensM(item.completionTokens)} · 缓存 ${"%.0f".format(item.cacheRate * 100)}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }

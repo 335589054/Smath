@@ -281,12 +281,12 @@ object ImageUtils {
         return Bitmap.createScaledBitmap(bitmap, (w * scale).roundToInt(), (h * scale).roundToInt(), true)
     }
 
-    fun toDataUrl(path: String, maxDimension: Int = 1600): String? {
+    fun toDataUrl(path: String, maxDimension: Int = 1600, quality: Int = 85): String? {
         return try {
             val loaded = loadBitmap(path, maxDimension) ?: return null
             val scaled = scaleDown(loaded, maxDimension)
             val output = ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.JPEG, 85, output)
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(30, 100), output)
             if (scaled !== loaded) loaded.recycle()
             scaled.recycle()
             val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)

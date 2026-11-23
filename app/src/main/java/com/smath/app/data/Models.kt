@@ -152,7 +152,9 @@ data class AppSettings(
     /** 流式输出时是否自动跟随到底部；关闭后除非用户手动滑到底或点「到底部」，页面不会自己动。 */
     val autoFollowStreaming: Boolean = true,
     /** 检查更新 / 下载安装包使用的源：official、gh-proxy.com、gh-proxy.org。 */
-    val updateSource: String = "gh-proxy.com"
+    val updateSource: String = "gh-proxy.com",
+    /** 发送图片前压缩（缩小边长并降低质量），可显著减少 token 消耗。 */
+    val imageCompressionEnabled: Boolean = true
 ) {
     val thinking: ThinkingLevel get() = thinkingLevel ?: ThinkingLevel.MEDIUM
 }
@@ -246,8 +248,48 @@ data class Conversation(
     /** 当前正在编辑（也就是对话最末端）的节点。 */
     val currentNodeId: String? = null,
     /** 已选定父节点、等待下一条提问开启新分支。 */
-    val pendingParentIds: List<String> = emptyList()
+    val pendingParentIds: List<String> = emptyList(),
+    /** 最近一次请求的用量，用于在输入框下方显示上下文占用与缓存命中率。 */
+    val lastPromptTokens: Long = 0,
+    val lastCachedTokens: Long = 0,
+    val lastCompletionTokens: Long = 0
 )
+
+/** 按「服务商 + 模型」累计的 token 用量。 */
+data class TokenUsage(
+    val providerId: String,
+    val providerName: String,
+    val model: String,
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0,
+    val cachedTokens: Long = 0,
+    val requests: Int = 0,
+    val lastAt: Long = 0
+) {
+    val totalTokens: Long get() = promptTokens + completionTokens
+
+    /** 缓存命中率：命中 token / 全部输入 token。 */
+    val cacheRate: Float
+        get() = if (promptTokens <= 0) 0f else (cachedTokens.toFloat() / promptTokens).coerceIn(0f, 1f)
+
+    val key: String get() = "$providerId|$model"
+}
+
+/** 常见模型的上下文窗口，用于输入框下方的占用比例估算。 */
+fun contextWindowFor(model: String): Long {
+    val name = model.lowercase()
+    return when {
+        "deepseek" in name -> 1_000_000L
+        "gpt-6" in name || "gpt6" in name -> 1_000_000L
+        name.startsWith("o3") || name.startsWith("o4") -> 200_000L
+        "gpt-4.1" in name || "gpt-5" in name -> 1_000_000L
+        "gpt-4o" in name -> 128_000L
+        "gemini" in name -> 1_000_000L
+        "claude" in name -> 200_000L
+        "qwen" in name -> 131_072L
+        else -> 128_000L
+    }
+}
 
 data class ConversationFolder(
     val id: String,
@@ -259,7 +301,9 @@ data class ConversationFolder(
 data class AppData(
     val settings: AppSettings = defaultSettings(),
     val conversations: List<Conversation> = emptyList(),
-    val folders: List<ConversationFolder> = emptyList()
+    val folders: List<ConversationFolder> = emptyList(),
+    /** 按服务商/模型累计的 token 用量。 */
+    val usage: List<TokenUsage> = emptyList()
 )
 
 const val BASE_AGENT_PROMPT =
@@ -345,6 +389,8 @@ point(0,0);
 - 画布没有边界，不需要也不能写 canvas_init；坐标原点在画布中心，x 向右、y 向上，坐标可以取任意有限数值。应用以正方形视口显示，可拖动和缩放查看。
 - axes(scale,gridStep) 设置当前坐标轴：scale 表示每个单位多少像素，gridStep 表示网格间隔（单位）。可以多次声明，每次生成一个新的 axis id。
 - function("表达式"[,axisId]) 绘制一元函数，变量为 x；省略 axisId 时使用最近声明的坐标轴。支持 + - * / ^、括号、pi、e、i，以及 sin cos tan asin acos atan sqrt abs exp ln log10 floor ceil round。
+- param("x(t)", "y(t)", t0, t1, 采样数[,axisId]) 绘制参数方程，自变量固定写 t，t 从 t0 走到 t1，采样数决定光滑程度（40–3000，默认 600，曲线打结或尖点处取大一些）。示例：param("3*cos(t)", "2*sin(t)", 0, 6.2832, 800) 画椭圆；param("t*cos(t)", "t*sin(t)", 0, 25.13, 1500) 画螺线。函数集合同 function。
+- 参数方程只画“能画准”的：表达式保持简洁（x、y 合计不超过 180 个字符、运算不超过 60 个），区间跨度不超过 4000，且区间内要能取到实数。遇到需要特殊函数（贝塞尔、椭圆积分、Γ 函数）、阶跃/分段、或自己也无法确定形状的曲线，**不要硬画**，改为说明原因并用文字或简单的函数图像替代。
 - line(x1,y1,x2,y2) 和 point(x,y) 使用画布坐标（像素，原点在中心，x 向右、y 向上），不受 axes 缩放影响，也没有边界限制。
 - color(r,g,b) 设置颜色并保持到下一次 color；stroke_width(n) 设置线条、函数曲线和点的粗细（n 为正数），保持到下一次 stroke_width。默认颜色为黑色，默认粗细为 2。
 - string("文本",x,y,scale) 在画布坐标 (x,y) 处绘制文本，y 为文本基线位置；scale 为文字缩放倍数，1 为默认大小。文本颜色使用当前 color。

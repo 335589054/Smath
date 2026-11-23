@@ -65,6 +65,8 @@ import com.smath.app.agent.PaintCommand
 import com.smath.app.agent.PaintDocument
 import com.smath.app.agent.LinearAlgebraTool
 import com.smath.app.agent.PaintError
+import com.smath.app.agent.PARAM_MAX_SAMPLES
+import com.smath.app.agent.PARAM_MIN_SAMPLES
 import com.smath.app.agent.evalMath
 import com.smath.app.agent.formatComplex
 import com.smath.app.agent.parsePaint
@@ -84,8 +86,23 @@ fun SpecialAgentContent(
     dark: Boolean,
     drawingCanvasSize: Int,
     streaming: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    heightKey: String? = null,
+    heights: MutableMap<String, Int>? = null
 ) {
+    // 把渲染高度缓存下来：LazyColumn 回收条目后重新组合时直接用已知高度，
+    // 避免 WebView 先以 20dp 出现再长高导致的滚动跳变。
+    fun cached(key: String): Int {
+        if (heights == null || heightKey == null) return 0
+        return heights[heightKey + "#" + key] ?: 0
+    }
+
+    fun record(key: String): (Int) -> Unit {
+        if (heights == null || heightKey == null) return {}
+        val full = heightKey + "#" + key
+        return { value: Int -> heights[full] = value }
+    }
+
     // 绘图/计算器的开关只决定是否向模型注入协议提示词；
     // 解析本身始终开启，否则关闭开关后历史会话里的图表会突然消失。
     if (markdown.isBlank()) {
@@ -94,7 +111,13 @@ fun SpecialAgentContent(
     }
     val matches = specialBlockRegex.findAll(markdown).toList()
     if (matches.isEmpty()) {
-        MarkdownView(markdown = markdown, dark = dark, modifier = modifier)
+        MarkdownView(
+            markdown = markdown,
+            dark = dark,
+            modifier = modifier,
+            cachedHeightPx = cached("body"),
+            onHeightMeasured = record("body")
+        )
         return
     }
     Column(
@@ -102,10 +125,21 @@ fun SpecialAgentContent(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         var cursor = 0
+        var segment = 0
         matches.forEach { match ->
             if (match.range.first > cursor) {
                 val plain = markdown.substring(cursor, match.range.first).trim()
-                if (plain.isNotBlank()) MarkdownView(plain, dark, Modifier.fillMaxWidth())
+                if (plain.isNotBlank()) {
+                    segment += 1
+                    val key = "seg$segment"
+                    MarkdownView(
+                        plain,
+                        dark,
+                        Modifier.fillMaxWidth(),
+                        cachedHeightPx = cached(key),
+                        onHeightMeasured = record(key)
+                    )
+                }
             }
             val kind = match.groupValues[1]
             val body = match.groupValues[2]
@@ -136,7 +170,16 @@ fun SpecialAgentContent(
         }
         if (cursor < markdown.length) {
             val tail = markdown.substring(cursor).trim()
-            if (tail.isNotBlank()) MarkdownView(tail, dark, Modifier.fillMaxWidth())
+            if (tail.isNotBlank()) {
+                val key = "tail"
+                MarkdownView(
+                    tail,
+                    dark,
+                    Modifier.fillMaxWidth(),
+                    cachedHeightPx = cached(key),
+                    onHeightMeasured = record(key)
+                )
+            }
         }
     }
 }
@@ -466,6 +509,36 @@ private fun PaintCanvas(
                                 }
                                 px += step
                                 guard++
+                            }
+                            drawPath(path, currentColor, style = Stroke(width = currentStroke / drawScale))
+                        }
+                        is PaintCommand.Parametric -> {
+                            val path = Path()
+                            var started = false
+                            val samples = command.samples.coerceIn(PARAM_MIN_SAMPLES, PARAM_MAX_SAMPLES)
+                            for (index in 0..samples) {
+                                val f = index.toDouble() / samples
+                                val t = command.tStart + (command.tEnd - command.tStart) * f
+                                val xv = runCatching { evalMath(command.xExpression, t) }.getOrNull()
+                                val yv = runCatching { evalMath(command.yExpression, t) }.getOrNull()
+                                if (xv == null || yv == null || !xv.isReal() || !yv.isReal() ||
+                                    !xv.re.isFinite() || !yv.re.isFinite()
+                                ) {
+                                    started = false
+                                    continue
+                                }
+                                val sx = (xv.re * command.scale).toFloat()
+                                val sy = (-yv.re * command.scale).toFloat()
+                                if (!sx.isFinite() || !sy.isFinite()) {
+                                    started = false
+                                    continue
+                                }
+                                if (!started) {
+                                    path.moveTo(sx, sy)
+                                    started = true
+                                } else {
+                                    path.lineTo(sx, sy)
+                                }
                             }
                             drawPath(path, currentColor, style = Stroke(width = currentStroke / drawScale))
                         }
