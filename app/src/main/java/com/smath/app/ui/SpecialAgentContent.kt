@@ -89,7 +89,9 @@ fun SpecialAgentContent(
     modifier: Modifier = Modifier,
     heightKey: String? = null,
     heights: MutableMap<String, Int>? = null,
-    onSegmentHeight: ((String, Int) -> Unit)? = null
+    onSegmentHeight: ((String, Int) -> Unit)? = null,
+    /** 正文文字字号（sp）；思考内容用小字传入。 */
+    bodyFontSizeSp: Float? = null
 ) {
     // 把渲染高度缓存下来：LazyColumn 回收条目后重新组合时直接用已知高度，
     // 避免 WebView 先以 20dp 出现再长高导致的滚动跳变。
@@ -110,7 +112,7 @@ fun SpecialAgentContent(
     // 绘图/计算器的开关只决定是否向模型注入协议提示词；
     // 解析本身始终开启，否则关闭开关后历史会话里的图表会突然消失。
     if (markdown.isBlank()) {
-        MarkdownView(markdown = markdown, dark = dark, modifier = modifier)
+        MarkdownView(markdown = markdown, dark = dark, modifier = modifier, fontSizeSp = bodyFontSizeSp)
         return
     }
     val matches = specialBlockRegex.findAll(markdown).toList()
@@ -120,7 +122,8 @@ fun SpecialAgentContent(
             dark = dark,
             modifier = modifier,
             cachedHeightPx = cached("body"),
-            onHeightMeasured = record("body")
+            onHeightMeasured = record("body"),
+            fontSizeSp = bodyFontSizeSp
         )
         return
     }
@@ -141,7 +144,8 @@ fun SpecialAgentContent(
                         dark,
                         Modifier.fillMaxWidth(),
                         cachedHeightPx = cached(key),
-                        onHeightMeasured = record(key)
+                        onHeightMeasured = record(key),
+                        fontSizeSp = bodyFontSizeSp
                     )
                 }
             }
@@ -181,7 +185,8 @@ fun SpecialAgentContent(
                     dark,
                     Modifier.fillMaxWidth(),
                     cachedHeightPx = cached(key),
-                    onHeightMeasured = record(key)
+                    onHeightMeasured = record(key),
+                    fontSizeSp = bodyFontSizeSp
                 )
             }
         }

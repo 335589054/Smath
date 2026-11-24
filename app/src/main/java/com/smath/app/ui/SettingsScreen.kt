@@ -54,6 +54,7 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.SettingsBrightness
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -555,6 +556,74 @@ fun SettingsScreen(
                             onClick = { showLinalgSample = true },
                             shape = CircleShape
                         ) { Text("查看工具示例效果") }
+                        Spacer(Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Spacer(Modifier.height(14.dp))
+                        val leanReady = settings.leanServerUrl.isNotBlank() &&
+                            settings.leanApiKey.isNotBlank()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Science,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "lean 编译 Agent",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "需要lean编译工具：先在电脑上运行 tools/lean_server.py，把地址和 Key 填进来，才允许开启。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = settings.leanAgentEnabled,
+                                enabled = leanReady,
+                                onCheckedChange = viewModel::setLeanAgentEnabled
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = settings.leanServerUrl,
+                            onValueChange = viewModel::setLeanServerUrl,
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("服务地址") },
+                            placeholder = { Text("http://192.168.1.10:8765") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(13.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = settings.leanApiKey,
+                            onValueChange = viewModel::setLeanApiKey,
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("API Key") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(13.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = viewModel::testLeanConnection,
+                                enabled = leanReady,
+                                shape = CircleShape
+                            ) { Text("测试连接") }
+                            if (!leanReady) {
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "需要lean编译工具",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -890,7 +959,8 @@ fun SettingsScreen(
                 null
             },
             drawingEnabled = settings.drawingAgentEnabled,
-            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled
+            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled,
+            leanEnabled = settings.leanAgentEnabled
         )
     }
 

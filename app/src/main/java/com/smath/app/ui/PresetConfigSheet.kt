@@ -54,7 +54,8 @@ fun PresetConfigSheet(
     isNew: Boolean = false,
     onDelete: (() -> Unit)? = null,
     drawingEnabled: Boolean = false,
-    calcEnabled: Boolean = false
+    calcEnabled: Boolean = false,
+    leanEnabled: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val nameEditable = isNew || !preset.builtIn
@@ -163,11 +164,13 @@ fun PresetConfigSheet(
             ) {
                 preset.availableStyles.forEach { option ->
                     val needsDrawing = option == AnswerStyle.VISUAL_RICH && !drawingEnabled
-                    // “多调用数值检验”要用计算器或线性代数计算器去真的算一遍。
+                    // “多用计算器agent”要用计算器或线性代数计算器去真的算一遍。
                     val needsCalc = option == AnswerStyle.MULTI_NUMERIC_CHECK && !calcEnabled
+                    // “鼓励使用lean编译agent”必须先配好 lean 编译工具并开启。
+                    val needsLean = option == AnswerStyle.LEAN_COMPILE && !leanEnabled
                     FilterChip(
                         selected = styles.contains(option),
-                        enabled = !locked && !needsDrawing && !needsCalc,
+                        enabled = !locked && !needsDrawing && !needsCalc && !needsLean,
                         onClick = {
                             styles = if (styles.contains(option)) styles - option else styles + option
                         },
@@ -175,11 +178,12 @@ fun PresetConfigSheet(
                     )
                 }
             }
-            if (!drawingEnabled || !calcEnabled) {
+            if (!drawingEnabled || !calcEnabled || !leanEnabled) {
                 Spacer(Modifier.height(6.dp))
                 val hints = buildList {
                     if (!drawingEnabled) add("「图文并茂」需要先在设置中开启绘图 Agent")
-                    if (!calcEnabled) add("「多调用数值检验」需要先在设置中开启计算器或线性代数计算器 Agent")
+                    if (!calcEnabled) add("「多用计算器agent」需要先在设置中开启计算器或线性代数计算器 Agent")
+                    if (!leanEnabled) add("「鼓励使用lean编译agent」需要先在设置中配置并开启 lean 编译 Agent")
                 }
                 Text(
                     text = hints.joinToString("；") + "。",

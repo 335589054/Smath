@@ -56,9 +56,14 @@ enum class AnswerStyle(val label: String, val prompt: String) {
         "在关键处配合图形说明，比如用绘图工具画出函数图像、几何关系或示意图，让读者能同时看到图与文字。"
     ),
     MULTI_NUMERIC_CHECK(
-        "多调用数值检验",
+        "多用计算器agent",
         "关键数值、方程的解、矩阵运算等容易算错的环节，主动调用计算类工具实际算一遍，再以工具返回的结果为准继续推导；" +
-            "最终回答里说明你验证了哪些量，不要把没验证过的结果当成已验证。"
+            "能算的都算一遍，最终回答里说明你验证了哪些量，不要把没验证过的结果当成已验证。"
+    ),
+    LEAN_COMPILE(
+        "鼓励使用lean编译agent",
+        "涉及形式化数学、Lean 4 代码、定理证明，或需要严格验证的推导时，优先调用 lean 编译工具真正编译一遍，" +
+            "再根据编译结果修正或确认结论；不要只凭印象判断代码能否通过。"
     )
 }
 
@@ -154,7 +159,11 @@ data class AppSettings(
     /** 检查更新 / 下载安装包使用的源：official、gh-proxy.com、gh-proxy.org。 */
     val updateSource: String = "gh-proxy.com",
     /** 发送图片前压缩（缩小边长并降低质量），可显著减少 token 消耗。 */
-    val imageCompressionEnabled: Boolean = true
+    val imageCompressionEnabled: Boolean = true,
+    /** lean 编译 Agent：调用局域网里的 lean_server.py 真正编译 Lean 4 代码。 */
+    val leanAgentEnabled: Boolean = false,
+    val leanServerUrl: String = "",
+    val leanApiKey: String = ""
 ) {
     val thinking: ThinkingLevel get() = thinkingLevel ?: ThinkingLevel.MEDIUM
 }
@@ -332,9 +341,10 @@ fun buildSystemPrompt(
     globalPrompt: String = BASE_AGENT_PROMPT,
     drawingEnabled: Boolean = false,
     calculatorEnabled: Boolean = false,
-    linearAlgebraEnabled: Boolean = false
+    linearAlgebraEnabled: Boolean = false,
+    leanEnabled: Boolean = false
 ): String {
-    val anyTool = drawingEnabled || calculatorEnabled || linearAlgebraEnabled
+    val anyTool = drawingEnabled || calculatorEnabled || linearAlgebraEnabled || leanEnabled
     val parts = mutableListOf<String>()
     if (preset.injectBasePrompt && globalPrompt.isNotBlank()) {
         parts += globalPrompt.trim()
@@ -342,12 +352,14 @@ fun buildSystemPrompt(
     parts += REASONING_QUALITY_PROMPT
     if (preset.stage.prompt.isNotBlank()) parts += preset.stage.prompt
     preset.effectiveStyles.forEach { style ->
-        // “图文并茂”依赖绘图工具；“多调用数值检验”依赖任意计算类工具。
-        // 对应 agent 未开启时不注入，避免模型给出无法执行的指令。
+        // 「图文并茂」依赖绘图工具，「多用计算器agent」依赖任意计算类工具，
+        // 「鼓励使用lean编译agent」依赖 lean 编译服务；对应 agent 未开启时不注入，
+        // 避免模型给出无法执行的指令。
         if (style == AnswerStyle.VISUAL_RICH && !drawingEnabled) return@forEach
         if (style == AnswerStyle.MULTI_NUMERIC_CHECK && !(calculatorEnabled || linearAlgebraEnabled)) {
             return@forEach
         }
+        if (style == AnswerStyle.LEAN_COMPILE && !leanEnabled) return@forEach
         parts += style.prompt
     }
     if (preset.customInstruction.isNotBlank()) parts += preset.customInstruction.trim()
@@ -355,6 +367,7 @@ fun buildSystemPrompt(
     if (drawingEnabled) parts += drawingAgentPrompt()
     if (calculatorEnabled) parts += CALCULATOR_AGENT_PROMPT
     if (linearAlgebraEnabled) parts += LINEAR_ALGEBRA_AGENT_PROMPT
+    if (leanEnabled) parts += LEAN_AGENT_PROMPT
     parts += "回答时请使用 Markdown 排版；数学公式使用 LaTeX，行内公式用 \$...\$，独立公式用 \$\$...\$\$；代码、表格和列表保持结构清晰。"
     return parts.joinToString("\n\n")
 }
@@ -364,14 +377,16 @@ fun buildSystemPrompt(
  * 由应用执行工具、把结果作为下一条消息回灌，再发起下一轮请求。
  */
 const val MULTI_STEP_TOOL_PROTOCOL = """多步工具调用（已启用）：
-1. 需要工具时，先用一句话说明你要算/画什么，然后输出工具块；**输完工具块后立刻结束本轮输出**，不要继续推导，不要写总结、结语或“等待结果”之类的话。应用会执行工具，并把执行结果作为下一条消息发给你。
-2. 收到“工具执行结果”后，直接基于结果继续推理和书写；不要重复已经输出过的内容，也不要把同一段工具命令再贴一次。
-3. 每轮只调用一个工具，一次回答里最多调用 4 次。结果与预期不符时，可以换表达式或换种方法再算一次，但不要为了凑数反复调用。
-4. 没调用工具就不要声称“已计算/已验证/已画图”；也不要编造工具的执行结果，一切以应用返回的结果为准。
-5. 工具报错时，读懂错误原因（通常是语法或取值问题），修正后重试一次；仍然失败就改用其他方法，并在回答里说明。"""
+1. 需要工具时，先用一句话说明你要算/画/验证什么，然后输出工具块；**输完工具块后立刻结束本轮输出**，不要继续推导，不要写总结、结语或“等待结果”之类的话。应用会真的执行工具，并把执行结果作为下一条消息发给你。
+2. **可以在思考过程里调用工具，而且请优先调用工具、再动笔写正文**：先用工具拿到真实数据，再基于结果组织答案，比先写结论再补验证可靠得多。
+3. 收到“工具执行结果”后，直接基于结果继续推理和书写；不要重复已经输出过的内容，也不要把同一段工具命令再贴一次。如果结果还需要继续算、继续画、继续编译，可以**再次**输出新的工具块，一次回答里累计最多 8 次。
+4. 没调用工具就不要声称“已计算/已验证/已画图/已编译”；也不要编造工具的执行结果，一切以应用返回的结果为准。
+5. 工具报错时，读懂错误原因（通常是语法、参数取值或缺少前提），修正后重试一次；仍然失败就改用其他方法，并在回答里说明失败原因。
+6. **呈现规则（很重要）**：在思考过程里调用的工具，其图形、数值、编译输出在界面上只在用户展开思考时才看得到。因此只要最终回答需要某张图、某个数值或某段编译结果，就**必须在正文里再输出一次对应的工具块**（或把结论完整写进正文），绝不要让图片或结果只留在思考里。"""
 
 private fun drawingAgentPrompt(): String = """绘图工具（已启用）：
-当问题适合用图形说明时，可以在回答中直接生成一张精确的图。应用会把标记内的命令渲染成可缩放的无限画布，并在画布下方提供命令编辑入口。只在确实有助于理解时绘图，不要为了展示而绘图，也不要在思考过程中使用绘图标记。
+当问题适合用图形说明时，可以在回答中直接生成一张精确的图。应用会把标记内的命令渲染成可缩放的无限画布，并在画布下方提供命令编辑入口。只在确实有助于理解时绘图，不要为了展示而绘图。
+注意：写在思考过程里的绘图块，用户只有展开思考才能看到；所以**要让用户看到图，就把绘图块写在正文里**（正文写一份即可）。
 
 格式必须严格如下，标记各占一行：
 [${'$'}${'$'}paint_start${'$'}${'$'}]
@@ -405,7 +420,7 @@ const val CALCULATOR_AGENT_PROMPT = """计算器工具（已启用）：
 [${'$'}${'$'}calc_end${'$'}${'$'}]
 - 一个块只写一个表达式，不要写等号、单位或中文；应用会显示计算结果。
 - 支持 + - * / ^、括号、pi、e、i（虚数单位），以及 sin cos tan asin acos atan sinh cosh tanh sqrt abs exp ln log10 floor ceil round re im conj arg。
-- 计算器只负责数值，不负责符号推导。不要在思考过程中使用计算器标记；不要编造计算结果，最终解释可以引用“上方计算结果”。
+- 计算器只负责数值，不负责符号推导。可以在思考过程里用它先算出真实数值；但**正文里也要给出结果或再调用一次**，否则用户在折叠的思考里看不到。不要编造计算结果，最终解释可以引用“上方计算结果”。
 - 写完 end 标记就结束本轮输出，等待应用把数值结果告诉你；下一轮再继续推导。"""
 
 const val LINEAR_ALGEBRA_AGENT_PROMPT = """线性代数计算器（已启用）：
@@ -426,6 +441,18 @@ factor: a^2 - 2*a*b + b^2
 表达式支持 + - * / ^、括号、隐式乘法（2a、(a+b)(a-b)）、整数与分数、符号变量；也可以直接写 det(a,b;c,d) 这种调用。
 本工具是精确符号运算：没有 sin/ln 等符号函数，也没有根式化简；需要数值时用计算器。
 写完 end 标记就结束本轮输出，等待应用把结果告诉你；下一轮再继续讲解。"""
+
+const val LEAN_AGENT_PROMPT = """lean 编译工具（已启用）：
+用户的电脑（同一局域网）上跑着一个 Lean 4 编译器服务，你可以把 Lean 4 代码交给它**真正编译**，用它验证形式化证明、检查代码是否通过。格式必须严格如下，标记各占一行：
+[${'$'}${'$'}lean_start${'$'}${'$'}]
+theorem add_comm_two (a b : Nat) : a + b = b + a := by
+  omega
+[${'$'}${'$'}lean_end${'$'}${'$'}]
+- 块内就是完整的 Lean 4 源码，可以有多行、多个定理；不要写 Markdown 代码围栏，不要写 ``` 三个反引号。
+- 需要 import 时把 import 写在块内第一行（例如 import Mathlib 由服务端环境决定是否可用；不确定就不要写）。
+- 编译通过等于「这段代码可以编译」；编译失败时，应用会把 Lean 的报错原文发给你。请**读懂报错、修正代码后重试**，不要假装通过、也不要在没编译过的情况下声称"已验证"。
+- 如果应用回复说明 lean 编译工具不可用（未配置、连不上或服务端没有 lean），就不要再用 lean 标记，改用文字推理完成回答，并简短告诉用户需要在设置里配置 lean 编译工具。
+- 写完 end 标记就结束本轮输出，等待应用把编译结果告诉你；下一轮再继续讲解。"""
 
 val DEFAULT_PRESETS = listOf(
     AgentPreset(

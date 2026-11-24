@@ -326,7 +326,9 @@ fun ChatScreen(
             if (total == 0) return
             val last = info.visibleItemsInfo.lastOrNull() ?: return
             if (last.index < total - 1) {
-                listState.scrollToItem(total - 1)
+                // 还有没露出来的条目：用一次大位移逼近底部，而不是 scrollToItem。
+                // scrollToItem 会把那一项的顶部硬对齐到视口顶部，长回答里就会表现为「瞬移」。
+                listState.scrollBy(2_000_000f)
                 return@repeat
             }
             val gap = info.viewportEndOffset - info.afterContentPadding - (last.offset + last.size)
@@ -655,9 +657,6 @@ fun ChatScreen(
             onOpenGraph = { showBranchGraph = true },
             webSearch = settings.webSearchByDefault,
             onToggleSearch = { viewModel.setWebSearch(it) },
-            hasReasoning = hasReasoning,
-            thinkingExpanded = anyThinkingExpanded,
-            onToggleThinking = { toggleAllThinking() },
             canViewAnswer = lastAnswerIndex >= 0,
             onViewAnswer = { jumpToMessage(lastAnswerIndex) },
             canJump = canJump,
@@ -816,7 +815,8 @@ fun ChatScreen(
                 null
             },
             drawingEnabled = settings.drawingAgentEnabled,
-            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled
+            calcEnabled = settings.calculatorAgentEnabled || settings.linearAlgebraAgentEnabled,
+            leanEnabled = settings.leanAgentEnabled
         )
     }
 
@@ -1381,7 +1381,8 @@ private fun AssistantMessage(
                 streaming = false,
                 dark = dark,
                 expanded = thinkingExpanded,
-                onToggleExpanded = onToggleThinking
+                onToggleExpanded = onToggleThinking,
+                drawingCanvasSize = drawingCanvasSize
             )
                 Spacer(Modifier.height(10.dp))
             }
@@ -1469,45 +1470,96 @@ private fun StreamingBubble(
                 startedAt = streaming.startedAt,
                 dark = dark,
                 expanded = thinkingExpanded,
-                onToggleExpanded = onToggleThinking
+                onToggleExpanded = onToggleThinking,
+                drawingCanvasSize = drawingCanvasSize
             )
-                Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(10.dp))
+        }
+        if (streaming.toolEvents.isNotEmpty()) {
+            ToolEventList(streaming.toolEvents)
+            Spacer(Modifier.height(8.dp))
+        }
+        streaming.searchNotice?.let {
+            NoticeChip(it)
+            Spacer(Modifier.height(7.dp))
+        }
+        if (streaming.content.isBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.8.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = streaming.phase,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            streaming.searchNotice?.let {
-                NoticeChip(it)
-                Spacer(Modifier.height(7.dp))
-            }
-            if (streaming.content.isBlank()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 1.8.dp,
-                        color = MaterialTheme.colorScheme.primary
+        } else {
+            SpecialAgentContent(
+                markdown = streaming.content,
+                dark = dark,
+                drawingCanvasSize = drawingCanvasSize,
+                streaming = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = "正在生成…",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
+}
+
+/** 流式过程中的工具调用轨迹，模仿 DeepSeek Harness 的紧凑样式。 */
+@Composable
+private fun ToolEventList(events: List<ToolEvent>) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        events.forEach { event ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (event.ok) {
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = streaming.phase,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    Icon(
+                        Icons.Rounded.ErrorOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.error
                     )
                 }
-            } else {
-                SpecialAgentContent(
-                    markdown = streaming.content,
-                    dark = dark,
-                    drawingCanvasSize = drawingCanvasSize,
-                    streaming = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    text = "正在生成…",
+                    text = event.label,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
-                    modifier = Modifier.padding(top = 4.dp)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (event.detail.isNotBlank()) {
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = event.detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1691,7 +1743,8 @@ private fun ReasoningBlock(
     dark: Boolean,
     startedAt: Long = 0L,
     expanded: Boolean,
-    onToggleExpanded: () -> Unit
+    onToggleExpanded: () -> Unit,
+    drawingCanvasSize: Int = 720
 ) {
     val lastLine = reasoning.lineSequence()
         .map { it.trim().trimStart('>', '#', '*', '-', ' ').trim() }
@@ -1706,74 +1759,90 @@ private fun ReasoningBlock(
             }
         }
     }
+    // 计时口径：整个输出过程（思考 + 工具调用 + 正式回答）的总耗时。
     val elapsed = if (streaming) seconds else (finishedMs / 1000).coerceAtLeast(1)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(15.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onToggleExpanded() }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (streaming) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(13.dp),
-                        strokeWidth = 1.6.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    Icon(
-                        Icons.Rounded.Psychology,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = if (streaming) "正在深度思考 · ${elapsed}s"
-                    else "已深度思考（用时 ${elapsed} 秒）",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 不加边框、不加底色：标题行本身就是展开/收起按钮。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { onToggleExpanded() }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (streaming) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(13.dp),
+                    strokeWidth = 1.6.dp,
+                    color = MaterialTheme.colorScheme.primary
                 )
+            } else {
                 Icon(
-                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    Icons.Rounded.Psychology,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (!expanded && lastLine.isNotBlank()) {
-                Text(
-                    text = lastLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 9.dp)
-                )
-            }
-            if (expanded) {
-                Column(
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = if (streaming) "正在输出 · ${elapsed}s" else "总用时 ${elapsed} 秒",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (!expanded && lastLine.isNotBlank()) {
+            Text(
+                text = lastLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 23.dp, end = 8.dp, bottom = 4.dp)
+            )
+        }
+        if (expanded) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                // 思考内容里也可能有工具块：用同一个渲染器，展开后才能看到工具卡片。
+                SpecialAgentContent(
+                    markdown = reasoning,
+                    dark = dark,
+                    drawingCanvasSize = drawingCanvasSize,
+                    streaming = streaming,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                        .padding(top = 24.dp, end = 4.dp),
+                    bodyFontSizeSp = MaterialTheme.typography.bodySmall.fontSize.value
+                )
+                // 悬浮的「收起思考」：贴在展开区右上角，不占独立一行。
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.86f))
+                        .clickable { onToggleExpanded() }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                    Icon(
+                        Icons.Rounded.ExpandLess,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    MarkdownView(
-                        markdown = reasoning,
-                        dark = dark,
-                        fontSizeSp = MaterialTheme.typography.bodySmall.fontSize.value,
-                        modifier = Modifier.fillMaxWidth()
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "收起思考",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -2080,9 +2149,6 @@ private fun Composer(
     onOpenGraph: () -> Unit = {},
     webSearch: Boolean,
     onToggleSearch: (Boolean) -> Unit,
-    hasReasoning: Boolean,
-    thinkingExpanded: Boolean,
-    onToggleThinking: () -> Unit,
     canViewAnswer: Boolean,
     onViewAnswer: () -> Unit,
     canJump: Boolean,
@@ -2140,39 +2206,6 @@ private fun Composer(
                         color = if (webSearch) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-            }
-            if (hasReasoning) {
-                Spacer(Modifier.width(7.dp))
-                Surface(
-                    onClick = onToggleThinking,
-                    shape = CircleShape,
-                    color = if (thinkingExpanded) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surface,
-                    border = if (thinkingExpanded) null else androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        MaterialTheme.colorScheme.outline
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            if (thinkingExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = if (thinkingExpanded) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.width(3.dp))
-                        Text(
-                            text = if (thinkingExpanded) "收起思考" else "展开思考",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (thinkingExpanded) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
             }
             if (canViewAnswer) {

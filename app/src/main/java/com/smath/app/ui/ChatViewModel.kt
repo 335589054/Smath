@@ -8,6 +8,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.smath.app.SmathAppContext
+import com.smath.app.agent.LeanClient
 import com.smath.app.agent.ToolRunner
 import com.smath.app.api.ApiCallException
 import com.smath.app.api.ApiErrorCatalog
@@ -50,6 +51,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+/** 一次工具调用在界面上的展示信息（参考 DeepSeek Harness 的工具调用条目）。 */
+data class ToolEvent(
+    val kind: String,
+    val label: String,
+    val detail: String,
+    val ok: Boolean
+)
+
 data class StreamingMessage(
     val conversationId: String,
     val messageId: String,
@@ -57,7 +66,9 @@ data class StreamingMessage(
     val reasoning: String = "",
     val phase: String = "正在思考",
     val startedAt: Long = SystemClock.elapsedRealtime(),
-    val searchNotice: String? = null
+    val searchNotice: String? = null,
+    /** 本轮已经真实执行过的工具调用，按执行顺序排列。 */
+    val toolEvents: List<ToolEvent> = emptyList()
 )
 
 data class OrganizeUiState(
@@ -346,7 +357,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     globalPrompt = _data.value.settings.globalPrompt,
                     drawingEnabled = _data.value.settings.drawingAgentEnabled,
                     calculatorEnabled = _data.value.settings.calculatorAgentEnabled,
-                    linearAlgebraEnabled = _data.value.settings.linearAlgebraAgentEnabled
+                    linearAlgebraEnabled = _data.value.settings.linearAlgebraAgentEnabled,
+                    leanEnabled = _data.value.settings.leanAgentEnabled
                 ),
                 presetId = preset.id,
                 presetName = preset.name,
@@ -413,6 +425,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var citations = emptyList<com.smath.app.data.Citation>()
             var searchNotice: String? = null
             var phase = "正在思考"
+            var toolEvents = emptyList<ToolEvent>()
 
             fun publish(force: Boolean = false) {
                 val now = SystemClock.elapsedRealtime()
@@ -426,7 +439,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     reasoning = reasoning.toString(),
                     phase = phase,
                     startedAt = startedAt,
-                    searchNotice = searchNotice
+                    searchNotice = searchNotice,
+                    toolEvents = toolEvents
                 )
             }
 
@@ -504,7 +518,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val toolHistory = mutableListOf<ChatMessage>()
                 var toolRounds = 0
                 var toolCalls = 0
-                var executedUpTo = 0
+                // 正文与思考各自记录扫描游标：模型可以在任何一处调用工具。
+                var contentScannedUpTo = 0
+                var reasoningScannedUpTo = 0
                 var lastPromptTokens = 0L
                 var lastCompletionTokens = 0L
                 var lastCachedTokens = 0L
@@ -574,39 +590,67 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         publish(true)
                     }
 
-                    // 模型可能在本轮里调用了工具：本地执行后把结果回灌，再请求下一轮。
-                    val scan = ToolRunner.scan(
-                        content = content.toString(),
-                        fromIndex = executedUpTo,
-                        drawingCanvasSize = settings.drawingCanvasSize
+                    // 模型可能在本轮里调用了工具（正文、思考里都算）：本地执行后把结果回灌，再请求下一轮。
+                    val leanConfig = LeanClient.LeanConfig(
+                        baseUrl = settings.leanServerUrl,
+                        apiKey = settings.leanApiKey
                     )
-                    executedUpTo = scan.nextIndex
-                    if (scan.executions.isEmpty() || toolRounds >= ToolRunner.MAX_TOOL_ROUNDS) break
+                    val contentScan = ToolRunner.scanAsync(
+                        content = content.toString(),
+                        fromIndex = contentScannedUpTo,
+                        drawingCanvasSize = settings.drawingCanvasSize,
+                        lean = leanConfig
+                    )
+                    contentScannedUpTo = contentScan.nextIndex
+                    val reasoningScan = ToolRunner.scanAsync(
+                        content = reasoning.toString(),
+                        fromIndex = reasoningScannedUpTo,
+                        drawingCanvasSize = settings.drawingCanvasSize,
+                        lean = leanConfig
+                    )
+                    reasoningScannedUpTo = reasoningScan.nextIndex
+                    val executions = contentScan.executions + reasoningScan.executions
+                    if (executions.isEmpty() || toolRounds >= ToolRunner.MAX_TOOL_ROUNDS) break
                     toolRounds += 1
-                    toolCalls += scan.executions.size
+                    toolCalls += executions.size
+                    toolEvents = toolEvents + executions.map { exec ->
+                        ToolEvent(
+                            kind = exec.kind,
+                            label = when (exec.kind) {
+                                ToolRunner.KIND_CALC -> "计算器"
+                                ToolRunner.KIND_PAINT -> "绘图"
+                                ToolRunner.KIND_LINALG -> "线性代数"
+                                else -> "Lean 编译"
+                            },
+                            detail = exec.source.lineSequence()
+                                .firstOrNull { it.isNotBlank() }
+                                ?.trim()
+                                ?.take(80)
+                                .orEmpty(),
+                            ok = exec.ok
+                        )
+                    }
                     phase = if (toolRounds == 1) "正在执行工具" else "正在执行工具（第 $toolRounds 次）"
                     publish(true)
                     if (!content.endsWith("\n")) content.append("\n")
+                    val partial = content.toString().ifBlank { "（本轮在思考里调用了工具，还没有写正文）" }
                     toolHistory += ChatMessage(
                         id = "$messageId-tool-call-$toolRounds",
                         role = "assistant",
-                        content = content.toString()
+                        content = partial
                     )
                     toolHistory += ChatMessage(
                         id = "$messageId-tool-result-$toolRounds",
                         role = "user",
-                        content = ToolRunner.resultMessage(scan.executions)
+                        content = ToolRunner.resultMessage(executions)
                     )
                     phase = "正在继续回答"
                     publish(true)
                 }
                 val finalContent = content.toString()
                 val finalReasoning = reasoning.toString()
-                val thinkingMs = when {
-                    finalReasoning.isBlank() -> 0L
-                    firstContentAt > 0 -> firstContentAt - startedAt
-                    else -> SystemClock.elapsedRealtime() - startedAt
-                }
+                // 时间统计口径：整个输出过程（含思考、工具执行、续写）的总耗时。
+                val elapsedMs = SystemClock.elapsedRealtime() - startedAt
                 val notice = buildList {
                     searchNotice?.let(::add)
                     if (toolCalls > 0) add("已调用工具 $toolCalls 次 · $toolRounds 轮")
@@ -621,7 +665,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         role = "assistant",
                         content = finalContent.ifBlank { "（模型没有返回内容，请重试。）" },
                         reasoning = finalReasoning,
-                        thinkingMs = thinkingMs,
+                        thinkingMs = elapsedMs,
                         citations = citations,
                         notice = notice
                     )
@@ -849,6 +893,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAutoFollowStreaming(enabled: Boolean) {
         updateData { it.copy(settings = it.settings.copy(autoFollowStreaming = enabled)) }
+    }
+
+    /** lean 编译 Agent 只有在服务地址与 Key 都填好后才允许开启。 */
+    fun setLeanAgentEnabled(enabled: Boolean) {
+        if (enabled) {
+            val settings = _data.value.settings
+            if (settings.leanServerUrl.isBlank() || settings.leanApiKey.isBlank()) {
+                _events.tryEmit("请先填写 lean 服务地址和 Key，再开启 lean 编译 Agent")
+                return
+            }
+        }
+        updateData { it.copy(settings = it.settings.copy(leanAgentEnabled = enabled)) }
+    }
+
+    fun setLeanServerUrl(url: String) {
+        val clean = LeanClient.normalizeBaseUrl(url)
+        val disable = clean.isBlank()
+        updateData {
+            it.copy(
+                settings = it.settings.copy(
+                    leanServerUrl = clean,
+                    leanAgentEnabled = if (disable) false else it.settings.leanAgentEnabled
+                )
+            )
+        }
+    }
+
+    fun setLeanApiKey(key: String) {
+        val clean = key.trim()
+        updateData {
+            it.copy(
+                settings = it.settings.copy(
+                    leanApiKey = clean,
+                    leanAgentEnabled = if (clean.isEmpty()) false else it.settings.leanAgentEnabled
+                )
+            )
+        }
+    }
+
+    /** 设置页「测试连接」：带上当前配置打一次 /health。 */
+    fun testLeanConnection() {
+        val settings = _data.value.settings
+        val config = LeanClient.LeanConfig(settings.leanServerUrl, settings.leanApiKey)
+        viewModelScope.launch {
+            val result = LeanClient.ping(config)
+            _events.tryEmit(result.summary)
+        }
     }
 
     fun setDrawingCanvasSize(size: Int) {
