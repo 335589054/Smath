@@ -1,6 +1,6 @@
 # Smath 2.2.0
 
-> 安装包：`dist/Smath-2.2.0-release.apk`（12,998,017 字节，SHA-256 `0A32BDE8B33CD6AE2C2695CA25676AFA631D46946580CC2DDAD0159F852D5995`）
+> 安装包：`dist/Smath-2.2.0-release.apk`（12,998,017 字节，SHA-256 `5513CEDD88163EFF8432D3D1067D1FE490BF0F20517D4164BCCFD5D5E9EEB193`）
 > 版本：versionCode 19 / versionName 2.2.0，minSdk 26，targetSdk 35
 
 ## 这一版做了什么
@@ -21,12 +21,14 @@
 - 仓库新增 `tools/lean_server.py`：只用 Python 标准库的 HTTP 服务，`GET /health` + `POST /v1/check`，用 `X-API-Key` 鉴权。
 - 手机端在「设置 → 特殊 Agent → lean 编译 Agent」里填**服务地址**与 **API Key**；**没填或没开就点不动开关**，并提示「需要lean编译工具」。
 - 开启后模型可以写 `[$$lean_start$$] … [$$lean_end$$]` 代码块，App 交给电脑上的 lean 真正编译，把 stdout/stderr 回传给模型；连不上或编译不过都会变成中文结论，模型据此修正。
-- 电脑端安装 lean 三选一：`pip install lean`、`elan`、官方 zip；自检命令：
+- 电脑端安装 lean 三选一：`pip install lemma-lean` 后 `lemma toolchain install stable`、`elan`、官方 zip；最省事的是让服务自己装：
   ```bash
-  python tools/lean_server.py --self-test
-  python tools/lean_server.py --key 你的密钥
+  python tools/lean_server.py --install-lean   # 用 PyPI 的 lemma-lean 装 Lean4 工具链
+  python tools/lean_server.py --self-test      # 确认电脑认得到 lean
+  python tools/lean_server.py --key 你的密钥    # 启动服务，会打印 http://电脑IP:8788
   ```
-  如果 lean 只能用模块方式启动，用 `--lean "python -m lean"`。
+  如果 lean 只能用模块方式启动，用 `--lean "python -m 模块名"`。
+- 注意：**不要**用 `pip install lean` —— 那是 QuantConnect 的量化交易 CLI，与定理证明器无关。
 
 ### 4. 预设风格门控
 - 「多调用数值检验」改名为**「多用计算器agent」**；新增**「鼓励使用lean编译agent」**。

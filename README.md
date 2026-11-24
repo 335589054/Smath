@@ -27,7 +27,7 @@ Smath 是一个原生 Android（Kotlin + Jetpack Compose）对话型 AI Agent，
 
 从 [Releases](https://github.com/335589054/Smath/releases) 下载 APK 安装即可，minSdk 26（Android 8.0），targetSdk 35。
 
-当前版本 2.2.0：`Smath-2.2.0-release.apk`（12,998,017 字节，SHA-256 `0A32BDE8B33CD6AE2C2695CA25676AFA631D46946580CC2DDAD0159F852D5995`），保存在仓库 `dist/` 目录；
+当前版本 2.2.0：`Smath-2.2.0-release.apk`（12,998,017 字节，SHA-256 `5513CEDD88163EFF8432D3D1067D1FE490BF0F20517D4164BCCFD5D5E9EEB193`），保存在仓库 `dist/` 目录；
 已发布的最新 Release：[v2.1.1](https://github.com/335589054/Smath/releases/tag/v2.1.1)（2.2.0 的 Release 尚未上传）
 
 `dist/` 目录里也保存了各版本产物与 `SHA256SUMS.txt` 校验和。
@@ -37,13 +37,15 @@ Smath 是一个原生 Android（Kotlin + Jetpack Compose）对话型 AI Agent，
 1. 首次启动进入「设置 → 模型和 API Key」，选一个服务商填入 API Key（或添加自定义服务商）。
 2. 需要联网搜索时填写 DeepSeek Key（可与服务商 Key 相同）。
 3. 在首页选择 Agent 预设；需要工具能力时到「特殊 Agent」开启绘图 / 计算器 / 线性代数计算器。
-4. 想用 lean 编译：先在电脑上 `pip install lean`（或装 elan / 官方 zip），然后
+4. 想用 lean 编译：先在电脑上准备 lean，最省事是让服务自己装（PyPI 的 `lemma-lean`）：
    ```bash
-   python tools/lean_server.py --self-test          # 确认电脑认得到 lean
-   python tools/lean_server.py --key 你的密钥        # 启动服务，会打印 http://电脑IP:8788
+   python tools/lean_server.py --install-lean        # 用 pip 装 Lean4 工具链
+   python tools/lean_server.py --self-test           # 确认电脑认得到 lean
+   python tools/lean_server.py --key 你的密钥         # 启动服务，会打印 http://电脑IP:8788
    ```
    把打印出的地址和 `--key` 填进手机设置页的「lean 编译 Agent」，开关才能打开。
-   如果 lean 只能用模块方式启动，加 `--lean "python -m lean"`。
+   已经装过 elan / 官方 zip 的机器不用重复安装；lean 只能用模块方式启动时加 `--lean "python -m 模块名"`。
+   注意**不要** `pip install lean`，那是量化交易 CLI，和定理证明器无关。
 5. 全局提示词可在设置中查看与修改，只影响之后新建的会话。
 
 ## 构建

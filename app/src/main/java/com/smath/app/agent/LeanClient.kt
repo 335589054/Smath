@@ -150,7 +150,7 @@ object LeanClient {
                     } else {
                         LeanResult(
                             ok = false,
-                            summary = "能连上 lean 服务，但电脑上没有找到 lean 可执行文件（检查 lean_server.py 的 --lean 路径）",
+                            summary = "能连上 lean 服务，但电脑上没有装 lean（在电脑上运行 `python tools/lean_server.py --install-lean` 用 pip 装一个，或给 --lean 指定路径）",
                             raw = body,
                             elapsedMs = measured
                         )
